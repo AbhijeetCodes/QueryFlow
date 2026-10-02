@@ -1,0 +1,60 @@
+<!doctype html>
+<!-- The link-preview image (public/og.png, 1200×630). To regenerate:
+     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless --hide-scrollbars \
+       --window-size=1200,630 --screenshot=public/og.png scripts/og-card.html -->
+<html><head><meta charset="utf-8"><style>
+  * { box-sizing: border-box; margin: 0; }
+  html, body { width: 1200px; height: 630px; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; background: #f4f5f8; color: #1c2130; display: grid; grid-template-columns: 580px minmax(0, 1fr); }
+  .left { padding: 64px 24px 60px 64px; display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: center; gap: 18px; }
+  .brand b { font-size: 50px; font-weight: 750; letter-spacing: -0.02em; }
+  h1 { margin-top: 44px; font-size: 40px; line-height: 1.18; font-weight: 700; letter-spacing: -0.015em; }
+  h1 em { font-style: normal; color: #3a63d8; }
+  p { margin-top: 20px; font-size: 23px; line-height: 1.45; color: #5a6376; }
+  .chips { margin-top: auto; display: flex; flex-wrap: wrap; gap: 10px; }
+  .chips span { padding: 7px 13px; border-radius: 999px; background: #fff; border: 1px solid #e2e5eb; font-size: 17px; font-weight: 600; color: #3a4252; }
+  .right { position: relative; min-width: 0; padding: 56px 56px 56px 16px; }
+  .win { height: 100%; border-radius: 16px; background: #161a23; box-shadow: 0 24px 60px -20px rgba(20, 30, 60, .45); overflow: hidden; display: flex; flex-direction: column; }
+  .bar { height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 16px; background: #1d2230; }
+  .bar i { width: 12px; height: 12px; border-radius: 50%; background: #3a4152; }
+  pre { padding: 22px 24px; font: 15px/1.6 "SF Mono", Menlo, monospace; color: #c9d1e0; }
+  .k { color: #7aa2ff; } .f { color: #c79bff; } .s { color: #9ccf7a; } .n { color: #f0a46b; } .v { color: #ff9e64; } .c { color: #6b7590; } .t { color: #5fc4d6; }
+  .graph { margin-top: auto; padding: 0 24px 26px; }
+  .graph svg { display: block; }
+</style></head><body>
+  <div class="left">
+    <div class="brand">
+      <svg width="64" height="64" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#3a63d8"/><path d="M22.5 14.5A8 8 0 1 0 20.16 20.16L24.5 24.5" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="24.5" cy="24.5" r="2.5" fill="#fff"/></svg>
+      <b>QueryFlow</b>
+    </div>
+    <h1>Read and edit big SQL queries, <em>right in your browser</em></h1>
+    <p>Format, lint, see how the tables join and change every filter value in one place. Free, no login, nothing uploaded.</p>
+    <div class="chips"><span>BigQuery</span><span>PostgreSQL</span><span>MySQL</span><span>Join graph</span></div>
+  </div>
+  <div class="right"><div class="win">
+    <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="k">DECLARE</span> <span class="v">start_date</span> <span class="t">DATE</span> <span class="k">DEFAULT</span> <span class="s">'2025-01-01'</span>;
+<span class="c">-- weekly revenue per country</span>
+<span class="k">WITH</span> orders <span class="k">AS</span> (
+  <span class="k">SELECT</span> user_id, amount, order_date
+  <span class="k">FROM</span> shop.orders
+  <span class="k">WHERE</span> order_date >= <span class="v">start_date</span>
+),
+by_week <span class="k">AS</span> (
+  <span class="k">SELECT</span> u.country, <span class="f">DATE_TRUNC</span>(o.order_date, <span class="k">WEEK</span>) <span class="k">AS</span> wk,
+         <span class="f">SUM</span>(o.amount) <span class="k">AS</span> revenue
+  <span class="k">FROM</span> orders o <span class="k">JOIN</span> shop.users u <span class="k">USING</span> (user_id)
+  <span class="k">GROUP BY</span> <span class="n">1</span>, <span class="n">2</span>
+)</pre>
+    <div class="graph"><svg width="100%" height="84" viewBox="0 0 520 96">
+      <g fill="none" stroke="#4a5470" stroke-width="2"><path d="M128 24 C 160 24, 160 48, 196 48"/><path d="M128 72 C 160 72, 160 48, 196 48"/><path d="M314 48 L 380 48"/></g>
+      <g font-family="SF Mono, Menlo, monospace" font-size="15" font-weight="600">
+        <rect x="8" y="8" width="120" height="32" rx="8" fill="#13303a" stroke="#2c8fb0"/><text x="68" y="29" fill="#7fd3ee" text-anchor="middle">orders</text>
+        <rect x="8" y="56" width="120" height="32" rx="8" fill="#13303a" stroke="#2c8fb0"/><text x="68" y="77" fill="#7fd3ee" text-anchor="middle">users</text>
+        <rect x="196" y="32" width="118" height="32" rx="8" fill="#3a2c12" stroke="#c48a1e"/><text x="255" y="53" fill="#f2c46b" text-anchor="middle">by_week</text>
+        <rect x="380" y="32" width="120" height="32" rx="8" fill="#143220" stroke="#2f9e54"/><text x="440" y="53" fill="#86dca0" text-anchor="middle">result</text>
+      </g>
+    </svg></div>
+  </div></div>
+</body></html>

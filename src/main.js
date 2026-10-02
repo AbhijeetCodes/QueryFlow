@@ -616,3 +616,8 @@ syncHistoryButtons();
 view.focus();
 openShared();
 (window.requestIdleCallback ?? setTimeout)(() => { loadFormat(); loadDiff(); });
+// First visit in this browser: a small card saying what QueryFlow does.
+if (!store.get('welcomed')) {
+  store.set('welcomed', '1');
+  import('./welcome.js').then(({ showWelcome }) => showWelcome());
+}

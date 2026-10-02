@@ -244,8 +244,9 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--chip); pad
 .logo-q { fill: none; stroke: var(--on-accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
 .logo-node { fill: var(--on-accent); }
 .brand-name { color: var(--text); font-weight: 650; font-size: 13px; }
+.dialect-pick { position: relative; margin: 0 6px 0 -4px; }
 .dialect {
-  appearance: none; -webkit-appearance: none; margin: 0 6px 0 -4px; height: 20px; cursor: pointer;
+  display: inline-flex; align-items: center; height: 20px; cursor: pointer;
   font: 500 10.5px var(--sans); color: var(--text-muted); background-color: var(--chip);
   border: 1px solid transparent; border-radius: 10px; padding: 0 18px 0 8px;
   background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
@@ -253,7 +254,13 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--chip); pad
 }
 .dialect:hover { color: var(--text); border-color: var(--border); }
 .dialect:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.dialect option { color: var(--text); background: var(--panel); }
+.dialect[aria-expanded="true"] { color: var(--text); border-color: var(--border-strong); }
+.dialect-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 150; width: 268px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+}
+.dialect-menu .tm-item small { font-family: var(--mono); font-size: 10.5px; }
 .left { container-type: inline-size; }
 /* A narrowing editor pane drops, in turn, the "QueryFlow" name (the logo and
    the dialect picker stay), then undo/redo (⌘Z still works) and the cursor

@@ -372,9 +372,50 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
 // ---- dialect -------------------------------------------------------------------
 // The picker in the toolbar. Switching re-reads the same text; an untouched
 // sample query is swapped for the new dialect's sample.
-const dialectSelect = document.querySelector('select.dialect');
-dialectSelect.value = currentDialect();
-dialectSelect.addEventListener('change', () => setDialect(dialectSelect.value));
+// An in-app menu (like the ⋯ menu) rather than the browser's native <select> popup.
+const DIALECT_NOTES = {
+  bigquery: '`proj.ds.t`, DECLARE, @params',
+  postgres: '"Names", :: casts, $1 / :name',
+  mysql: '`names`, SET @var, # comments',
+};
+const dialectBtn = document.querySelector('.dialect');
+const dialectMenu = document.querySelector('.dialect-menu');
+dialectMenu.innerHTML = Object.values(DIALECTS).map((d) => `<button class="tm-item" role="menuitemradio" data-dialect="${d.id}">
+  <span class="tm-check">✓</span><span class="tm-text"><b>${d.name}</b><small>${DIALECT_NOTES[d.id] || ''}</small></span></button>`).join('');
+const dialectItems = () => [...dialectMenu.querySelectorAll('.tm-item')];
+function paintDialect(id = currentDialect()) {
+  dialectBtn.querySelector('.dialect-name').textContent = dialectOf(id).name;
+  dialectItems().forEach((el) => el.setAttribute('aria-checked', String(el.dataset.dialect === id)));
+}
+function toggleDialectMenu(open = dialectMenu.hidden) {
+  dialectMenu.hidden = !open;
+  dialectBtn.setAttribute('aria-expanded', String(open));
+  if (open) (dialectMenu.querySelector('[aria-checked="true"]') || dialectItems()[0]).focus();
+}
+dialectBtn.addEventListener('click', () => toggleDialectMenu());
+dialectBtn.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); toggleDialectMenu(true); }
+});
+dialectMenu.addEventListener('click', (e) => {
+  const item = e.target.closest('[data-dialect]');
+  if (!item) return;
+  toggleDialectMenu(false);
+  dialectBtn.focus();
+  setDialect(item.dataset.dialect);
+});
+dialectMenu.addEventListener('keydown', (e) => {
+  const items = dialectItems();
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+  }
+  if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); toggleDialectMenu(false); dialectBtn.focus(); }
+});
+document.addEventListener('pointerdown', (e) => {
+  if (!dialectMenu.hidden && !e.target.closest('.dialect-pick')) toggleDialectMenu(false);
+});
+paintDialect();
 
 async function loadSample() {
   let s = SAMPLES[currentDialect()];
@@ -393,7 +434,7 @@ async function setDialect(id, { quiet = false } = {}) {
     try { wasSample = doc === SAMPLES[old] || doc === await formatSql(SAMPLES[old], old); } catch { /* not the sample */ }
   }
   store.set('dialect', id);
-  dialectSelect.value = id;
+  paintDialect(id);
   setEditorDialect(view, id);
   if (wasSample) await loadSample();
   refresh();

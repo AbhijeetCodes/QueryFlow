@@ -16,7 +16,9 @@ hosted for free as a static site. See README.md for features, layout and hosting
 - **Light and fast.** It's for reading and editing 1,000+ line queries. Avoid new dependencies
   and keep anything not needed for first paint lazy-loaded (the formatter and diff dialog are
   loaded with `import()` in `src/main.js`).
-- **Git:** local repo with no remote yet. Ask before creating a remote, pushing or deploying.
+- **Git:** `origin` is the public GitHub repo `AbhijeetCodes/QueryFlow`. Every push to `main`
+  runs the tests and redeploys https://abhijeetcodes.github.io/QueryFlow/ (GitHub Pages, via
+  `.github/workflows/pages.yml`), so a push publishes. Ask before pushing.
 
 ## Commands
 

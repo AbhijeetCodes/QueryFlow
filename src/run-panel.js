@@ -90,13 +90,13 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
         <button class="run-pane-btn" data-pane="results" role="tab">Results</button>
       </div>
     </div>
-    <div class="run-off" hidden>Test runs translate BigQuery SQL for DuckDB. Switch the dialect to BigQuery to use them.</div>
+    <div class="run-off" hidden>Running translates BigQuery SQL for DuckDB, so switch the dialect to BigQuery to run. You can add and import test tables in any dialect.</div>
     <div class="run-data">
-      <p class="run-intro">Type or paste a few rows per table as CSV or TSV (cells copied from Excel or Sheets work), or import CSV files. The query runs on them here in your browser with DuckDB: nothing is uploaded. Up to ${LIMITS.rows.toLocaleString()} rows and ${LIMITS.cols} columns per table. Add <code>:TYPE</code> to a header to set a type, e.g. <code>id:INT64</code>.</p>
+      <p class="run-intro">Type or paste a few rows per table as CSV or TSV (cells copied from Excel or Sheets work), or import CSV and Excel files. The query runs on them here in your browser with DuckDB: nothing is uploaded. Up to ${LIMITS.rows.toLocaleString()} rows and ${LIMITS.cols} columns per table. Add <code>:TYPE</code> to a header to set a type, e.g. <code>id:INT64</code>.</p>
       <div class="tt-bar">
         <button class="mini accent" data-act="add" title="Add a test table by name, then paste or import its rows">+ Add table</button>
-        <button class="mini" data-act="import" title="Import .csv / .tsv files. A file named orders.csv fills the query's orders table">Import CSV files…</button>
-        <span class="tt-drop-hint">or drop .csv files here</span>
+        <button class="mini" data-act="import" title="Import .csv, .tsv or .xlsx files. orders.csv, or a sheet named orders, fills the query's orders table">Import CSV / Excel…</button>
+        <span class="tt-drop-hint">or drop .csv / .xlsx files here</span>
       </div>
       <h4 class="tt-h">Tables this query reads <span class="badge" data-count="query">0</span></h4>
       <div class="tt-list"></div>
@@ -118,7 +118,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
   const resEl = $('.run-results');
   const listEl = $('.tt-list');
   const otherEl = $('.tt-others');
-  const fileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.csv,.tsv,.txt,text/csv,text/tab-separated-values', multiple: true, hidden: true });
+  const fileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.csv,.tsv,.txt,.xlsx,.xlsm,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', multiple: true, hidden: true });
   root.append(fileInput);
   let importTarget = null; // a card's key, or null to match files to tables by name
   const paramsEl = $('.tt-params');
@@ -196,7 +196,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
       <textarea class="tt-text" spellcheck="false" autocomplete="off" rows="4"></textarea>
       <div class="tt-grid" hidden></div>
       <div class="tt-tools">${TOOLS[kind]}
-        <button class="mini" data-act="import-one" title="Fill this table from a .csv / .tsv file">Import file…</button>
+        <button class="mini" data-act="import-one" title="Fill this table from a .csv, .tsv or .xlsx file">Import file…</button>
         <button class="mini" data-act="view" title="Switch between the text and a table view of the rows">Table view</button>
         <button class="mini" data-act="${kind === 'query' ? 'clear' : 'delete'}">${kind === 'query' ? 'Clear' : 'Delete'}</button>
       </div>`;
@@ -323,36 +323,78 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
 
   // ---- importing files ------------------------------------------------------------------
 
-  const baseName = (f) => f.name.replace(/\.[^.]+$/, '').trim().replace(/\s+/g, '_');
+  // A file or sheet name as a table name: orders.csv -> orders, "Q1 orders" -> Q1_orders.
+  const plainName = (n) => n.replace(/\.[^.]+$/, '').trim().replace(/[^A-Za-z0-9_.\-]+/g, '_').replace(/^[._-]+|[._-]+$/g, '');
+  const GENERIC_SHEET = /^(sheet|tabelle|feuil|hoja|planilha|foglio|blad)\s*\d*$/i;
 
-  // The table a file fills: one the query reads with that name, else a new saved table.
-  function fileTarget(file) {
-    const base = tableKey(baseName(file));
+  // The table a name fills: one the query reads with that name, else a new saved table.
+  function targetFor(name) {
+    const base = tableKey(plainName(name));
     const q = analysis ? sourceTables(analysis) : [];
     const hit = q.find((t) => t.key === base || t.label.toLowerCase() === base || t.key.endsWith('.' + base));
-    return hit ? hit.key : base;
+    return hit ? { key: hit.key, query: true } : { key: base, query: false };
+  }
+
+  // Put text in a table, asking before replacing rows that are there.
+  function fill(key, text, what) {
+    if (!validName(key)) { toast(`Rename ${what} to a plain name like orders first`, 'error'); return false; }
+    if ((store.tables[key] ?? '').trim() && store.tables[key] !== text && !confirm(`Replace the test data in ${key} with ${what}?`)) return false;
+    store.tables[key] = text;
+    const el = cards.get(key);
+    if (el) { el.querySelector('textarea').value = text; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
+    return true;
+  }
+  const rowsNote = (r) => (r.truncated ? `first ${r.rows.toLocaleString()} of ${r.total.toLocaleString()} rows` : plural(r.rows, 'row'));
+
+  // Each sheet with cells becomes a table: a sheet named like a table the query
+  // reads fills it; otherwise a one-sheet file is named after the file, and a
+  // sheet with a real name after the sheet.
+  async function importWorkbook(file, target) {
+    let sheets;
+    try {
+      const { readXlsx } = await import('./xlsx.js');
+      sheets = await readXlsx(await file.arrayBuffer(), { maxRows: LIMITS.rows });
+    } catch (err) { toast(`${file.name}: ${err.message || err}`, 'error'); return; }
+    if (!sheets.length) { toast(`${file.name} has no cells to import`, 'error'); return; }
+    const plan = [];
+    if (target) {
+      const named = sheets.find((sh) => { const k = tableKey(plainName(sh.name)); return k === target || target.endsWith('.' + k); });
+      plan.push({ key: target, sheet: named || sheets[0] });
+    } else {
+      const base = plainName(file.name);
+      sheets.forEach((sh, i) => {
+        const bySheet = targetFor(sh.name);
+        if (bySheet.query) plan.push({ key: bySheet.key, sheet: sh });
+        else if (sheets.length === 1) plan.push({ key: targetFor(file.name).key, sheet: sh });
+        else plan.push({ key: GENERIC_SHEET.test(sh.name) ? tableKey(`${base}_${i + 1}`) : bySheet.key, sheet: sh });
+      });
+    }
+    const done = plan.filter((p) => fill(p.key, p.sheet.text, sheets.length > 1 ? `sheet "${p.sheet.name}" of ${file.name}` : file.name));
+    if (!done.length) return;
+    save();
+    renderTables(analysis);
+    const parts = done.map((p) => `${sheets.length > 1 ? `${p.sheet.name} → ` : '→ '}${p.key} (${rowsNote(p.sheet)})`);
+    const skipped = target && sheets.length > 1 ? ` · the other ${plural(sheets.length - 1, 'sheet')} skipped: drop the file on the panel to import every sheet` : '';
+    toast(`Imported ${file.name} ${parts.join(', ')}${skipped}`);
   }
 
   async function importFiles(files, target = null) {
     for (const file of files) {
-      if (/\.(xlsx|xlsm|xls|numbers|ods)$/i.test(file.name)) {
-        toast(`${file.name} is a spreadsheet: save it as CSV (File → Save As → CSV), or copy its cells and paste them into a table`, 'error');
+      if (/\.(xls|numbers|ods)$/i.test(file.name)) {
+        toast(`${file.name}: save it as .xlsx or CSV first, or copy its cells and paste them into a table`, 'error');
         continue;
       }
       if (file.size > 20 * 1024 * 1024) { toast(`${file.name} is over 20 MB: test tables are meant to be small`, 'error'); continue; }
+      if (/\.(xlsx|xlsm)$/i.test(file.name)) { await importWorkbook(file, target); continue; }
       let raw;
       try { raw = await file.text(); } catch { toast(`Couldn't read ${file.name}`, 'error'); continue; }
       if (raw.includes('\u0000')) { toast(`${file.name} doesn't look like a CSV file`, 'error'); continue; }
-      const key = target || fileTarget(file);
-      if (!validName(key)) { toast(`Rename ${file.name} to a plain name like orders.csv first`, 'error'); continue; }
-      if ((store.tables[key] ?? '').trim() && !confirm(`Replace the test data in ${key} with ${file.name}?`)) continue;
+      const key = target || targetFor(file.name).key;
       const r = importText(raw);
-      store.tables[key] = r.text;
+      if (!fill(key, r.text, file.name)) continue;
       save();
-      const el = cards.get(key);
-      if (el) { el.querySelector('textarea').value = r.text; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
       renderTables(analysis);
-      toast(`Imported ${file.name} → ${key} (${r.truncated ? `first ${r.rows.toLocaleString()} of ${r.total.toLocaleString()} rows` : plural(r.rows, 'row')})`);
+      toast(`Imported ${file.name} → ${key} (${rowsNote(r)})`);
     }
   }
 
@@ -667,7 +709,8 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
     const on = isBigQuery();
     offEl.hidden = on;
     root.classList.toggle('off', !on);
-    if (!on) return;
+    goBtn.disabled = !on && !running;
+    // Test tables work in every dialect; only running needs BigQuery.
     renderTargets(a);
     renderTables(a);
     renderParams(a);

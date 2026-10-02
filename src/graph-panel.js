@@ -572,6 +572,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
   }
 
   tablesView.addEventListener('click', (e) => {
+    if (e.target.closest('[data-act="to-run"]')) { showTab('run'); return; }
     const item = e.target.closest('[data-node]');
     if (!item) return;
     jumpTo(item.dataset.node);
@@ -697,6 +698,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
       </li>`;
     };
     tablesView.innerHTML = `
+      ${onRunTab ? '<div class="t-testdata"><button class="mini accent" data-act="to-run">Add test data…</button><span>Type, paste or import rows for these tables in the Run tab, then run the query on them</span></div>' : ''}
       <div class="t-group"><h4>Source tables <span class="badge">${tables.length}</span></h4><ul>${tables.map(row).join('') || '<li class="empty">None</li>'}</ul></div>
       ${outputs.length ? `<div class="t-group"><h4>Written / created <span class="badge">${outputs.length}</span></h4><ul>${outputs.map(row).join('')}</ul></div>` : ''}
       <div class="t-group"><h4>CTEs <span class="badge">${ctes.length}</span></h4><ul>${ctes.map(row).join('') || '<li class="empty">None</li>'}</ul></div>`;

@@ -161,8 +161,8 @@ function loadRun(el = runEl()) {
   }));
 }
 async function runQuery(target) {
-  if (!isBigQuery()) { toast('Test runs need the BigQuery dialect'); return; }
   graph.showTab('run');
+  if (!isBigQuery()) { toast('Running needs the BigQuery dialect: switch it next to the logo'); return; }
   (await loadRun()).run(target);
 }
 

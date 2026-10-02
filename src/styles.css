@@ -882,8 +882,9 @@ button.s-src:hover { text-decoration: underline; }
 .run-pane-btn { height: 24px; border: none; background: var(--panel); color: var(--text-muted); font-size: 11.5px; padding: 0 9px; }
 .run-pane-btn + .run-pane-btn { border-left: 1px solid var(--border); }
 .run-pane-btn.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.run-view.off .run-head > :not(.run-spacer), .run-view.off .run-data, .run-view.off .run-results { display: none; }
-.run-off { padding: 16px 14px; color: var(--text-muted); }
+.run-view.off .run-target, .run-view.off .run-status { display: none; }
+.run-go:disabled { opacity: 0.5; cursor: default; filter: none; }
+.run-off { flex: none; padding: 7px 12px; font-size: 11.5px; color: var(--warning); background: color-mix(in srgb, var(--warning) 8%, var(--panel)); border-bottom: 1px solid var(--border); }
 .run-data, .run-results { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 24px; }
 .run-intro { margin: 0 0 10px; color: var(--text-muted); font-size: 12px; line-height: 1.5; max-width: 72ch; }
 
@@ -963,3 +964,4 @@ button.s-src:hover { text-decoration: underline; }
 .tt-grid-empty, .tt-grid-more { padding: 6px 8px; font-size: 11px; color: var(--text-muted); }
 .run-data.dropping { outline: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -6px; background: var(--accent-soft); }
 .tt.drop-on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.t-testdata { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 11.5px; color: var(--text-muted); }

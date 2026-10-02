@@ -281,3 +281,15 @@ test('importing a big file keeps the header and the first rows', () => {
   assert.equal(inspectTable(r.text).rows, 1000);
   assert.equal(importText('a\r\n1\r\n').text, 'a\n1\n');
 });
+
+test('an Excel sheet runs with real dates, timestamps and booleans', async () => {
+  const { readXlsx } = await import('../src/xlsx.js');
+  const { readFileSync } = await import('node:fs');
+  const [orders, users] = await readXlsx(readFileSync(new URL('./fixtures/sample.xlsx', import.meta.url)));
+  const r = await run(`SELECT o.order_id, u.name, DATE_TRUNC(o.order_date, MONTH) AS m, EXTRACT(HOUR FROM o.created_at) AS h
+    FROM \`p.d.orders\` o JOIN \`p.d.users\` u USING (user_id) WHERE o.paid ORDER BY o.order_id`, { 'p.d.orders': orders.text, 'p.d.users': users.text });
+  assert.deepEqual(objs(r), [
+    { order_id: 1, name: 'Ana', m: day('2024-01-01'), h: 10 },
+    { order_id: 3, name: 'Ben', m: day('2024-02-01'), h: 9 },
+  ]);
+});

@@ -486,6 +486,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
     const runEl = root.querySelector('.run-view');
     runEl.hidden = name !== 'run';
     if (name === 'run') onRunTab?.(runEl); // the Run panel loads on first use
+    root.closest('.right')?.classList.toggle('run-mode', name === 'run');
     root.querySelector('.graph-tools').style.visibility = name === 'graph' ? 'visible' : 'hidden';
     try { localStorage.setItem('queryflow.tab', name); } catch { /* ignore */ }
     if (name === 'graph' && graphStale && analysis) { graphStale = false; drawGraph(analysis); }

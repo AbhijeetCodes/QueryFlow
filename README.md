@@ -105,15 +105,30 @@ type in, with [DuckDB](https://duckdb.org) compiled to WebAssembly. It all happe
 browser: the engine is part of this site, loads on the first run (~8 MB, then cached) and never
 contacts a server. Nothing is uploaded.
 
-- **One box per source table** the query reads. Type or paste CSV, or cells copied from Excel / Google Sheets (they paste as TSV). Types are detected from the values; set one in the header with `name:TYPE` (`id:INT64`, `tags:ARRAY<STRING>`). Empty cells and `NULL` are NULL. *Table view* shows the rows as a grid.
-- **Import CSV and Excel files**: *Import CSV / Excel…*, or drop `.csv`, `.tsv` or `.xlsx` files on the panel (or on one table). A file named like a table the query reads (`orders.csv` for `proj.shop.orders`) fills that table; any other file becomes a saved test table of that name. CSV saved by Excel works as it is, including the byte-order mark and `;`-separated files. A bigger file keeps its header and first 1,000 rows.
+The tab is kept short: the Run button, one chip per table the query reads (with its row count),
+parameter values, and the results. It takes the whole right column; the other tabs share it with
+the Variables panel. Click a chip, or **+ Create or upload table**, to open the *Test tables*
+dialog, where rows are typed, pasted and imported. Before the first run the results area says
+what's missing, and **Fill with starter rows** puts made-up rows in every empty table at once.
+With an empty editor it shows how to start: create a table, then write a query on it.
+
+**Practice database.** For learning SQL, *Practice ▾* (top right of the Run tab, or *Load the
+practice database* on an empty editor) loads a small made-up shop: `shop.customers`,
+`shop.products`, `shop.orders` and `shop.order_items`. Seven example queries go from `SELECT *`
+through filters, `GROUP BY`, joins, `LEFT JOIN`, dates and CTEs with a window function. Picking
+one puts it in the editor (⌘Z brings your query back), switches to BigQuery and runs it. The
+tables are ordinary saved test tables, so they can be edited, and *Reset the practice tables*
+puts them back.
+
+- **One editor per source table** the query reads, in the dialog. Type or paste CSV, or cells copied from Excel / Google Sheets (they paste as TSV). Types are detected from the values; set one in the header with `name:TYPE` (`id:INT64`, `tags:ARRAY<STRING>`). Empty cells and `NULL` are NULL. *Table view* shows the rows as a grid.
+- **Import CSV and Excel files**: *Upload files…*, or drop `.csv`, `.tsv` or `.xlsx` files on the Run tab or the dialog (or on the table being edited). A file named like a table the query reads (`orders.csv` for `proj.shop.orders`) fills that table; any other file becomes a saved test table of that name. CSV saved by Excel works as it is, including the byte-order mark and `;`-separated files. A bigger file keeps its header and first 1,000 rows.
 - **Excel workbooks** (`.xlsx`, `.xlsm`): every sheet with cells becomes a table. A sheet named like a table the query reads fills it, so one workbook with `orders` and `users` sheets fills both; a one-sheet file is named after the file, and `Sheet1`-style sheets after the file plus a number. The first non-blank row is the header. Dates and times are read from the cell formats (`2024-01-15`, `2024-01-15 10:30:00`), TRUE / FALSE become booleans and error cells (`#N/A`) become NULL; formulas give the value Excel last calculated. The workbook is read in the browser by QueryFlow's own small reader, with no library and no upload. Old `.xls` files need saving as `.xlsx` or CSV first.
-- **Your own test tables**: *+ Add table* adds a table by name, without writing `CREATE TABLE` / `INSERT`. Adding and importing work in every dialect; only running needs BigQuery. The Tables tab's *Add test data…* opens this panel. Saved tables are kept for every query: one is used when a query reads a table with that name, and a short name serves the full path (`orders` → `proj.shop.orders`, `shop.orders` beats `orders`) while that query's own box is empty. The card says which table it stands in for.
+- **Your own test tables**: *+ New table* adds a table by name, without writing `CREATE TABLE` / `INSERT`. Adding and importing work in every dialect; only running needs BigQuery. The Tables tab's *Add test data…* opens the Run tab. Saved tables are kept for every query: one is used when a query reads a table with that name, and a short name serves the full path (`orders` → `proj.shop.orders`, `shop.orders` beats `orders`) while that query's own box is empty. The editor says which table it stands in for.
 - **Columns from query** writes the header for you: the columns the query reads from that table. **Starter rows** adds 3 made-up rows that fit the query: ids 1–3 so joins match, values from its `=` / `IN` filters, dates inside its date window. Tables used only in `NOT IN` / `NOT EXISTS` filters get ids from 101, so they don't filter everything out.
-- **Query parameters**: give each `@param` a SQL value (`'SG'`, `42`, `DATE '2024-01-01'`). `DECLARE` variables use their defaults, so edit those in the Variables panel.
+- **Query parameters**: give each `@param` a SQL value (`'SG'`, `42`, `DATE '2024-01-01'`). `DECLARE` variables use their defaults, so edit those in the editor or the Variables panel (on the other tabs).
 - **Whole query or one CTE**: the target menu runs everything, or the script up to a chosen CTE (also *Run* in a CTE's graph card). Temp tables, temp functions and `SET` work like in a BigQuery script; the result is the last query, or the table the script wrote last.
-- **Results** show up to 1,000 rows with BigQuery-style values. Errors name the editor line, and *SQL sent to DuckDB* shows exactly what ran.
-- **Limits**: up to 20 tables per run, and 1,000 rows, 60 columns and 200k characters per table. Test tables are kept in this browser (`localStorage`, 1.5 MB in all) per table name, so they come back for the next query that reads the same table. *Clear all test data* removes them.
+- **Results** show up to 1,000 rows with BigQuery-style values. Errors name the editor line, and *SQL sent to DuckDB* shows exactly what ran. Editing the query afterwards dims the rows until the next run.
+- **Limits**: up to 20 tables per run, and 1,000 rows, 60 columns and 200k characters per table. Test tables are kept in this browser (`localStorage`, 1.5 MB in all) per table name, so they come back for the next query that reads the same table. *Clear all* in the dialog removes them.
 
 **How close is it to BigQuery?** QueryFlow rewrites the query for DuckDB: table names, strings, `SAFE_CAST`, `SAFE_DIVIDE`, `DATE_TRUNC` / `DATE_ADD` / `DATE_DIFF` (argument order, Sunday weeks, DATE results), `EXTRACT(DAYOFWEEK …)`, `FORMAT_DATE` / `PARSE_DATE`, `UNNEST … WITH OFFSET`, `IN UNNEST`, `[OFFSET(n)]`, `STRUCT(…)`, `SELECT * EXCEPT`, `ARRAY_AGG(… IGNORE NULLS … LIMIT n)`, `COUNTIF`, regex and JSON functions, `DECLARE` / `SET`, temp functions, and NULLs sorting first. QUALIFY, window functions, `GROUP BY ALL` and most other SQL run as they are. Not supported: scripting blocks (`IF`, `LOOP`, `BEGIN … END`), JavaScript UDFs, `SELECT AS STRUCT`, ML / GIS functions and time zones (everything is UTC). Treat a run as a logic check on a handful of rows; edge cases such as float rounding can differ from BigQuery.
 
@@ -193,4 +208,5 @@ In Chrome on Windows and Linux, F12 opens the developer tools; use Ctrl-click or
 | `src/runner.js`, `src/engine.js` | A test run (load tables, run statements, cap rows) and the DuckDB-WASM driver |
 | `src/xlsx.js` | Reads `.xlsx` workbooks into CSV (zip via the browser's `DecompressionStream`; loaded on first use) |
 | `src/run-panel.js` | Run tab |
+| `src/practice.js` | The practice database (a made-up shop) and its example queries |
 | `src/main.js` | Wires it together: toolbar, status bar, theme, panes, files, share links |

@@ -293,3 +293,32 @@ test('an Excel sheet runs with real dates, timestamps and booleans', async () =>
     { order_id: 3, name: 'Ben', m: day('2024-02-01'), h: 9 },
   ]);
 });
+
+test('every practice query runs on the practice database', async () => {
+  const { PRACTICE_TABLES, PRACTICE_QUERIES } = await import('../src/practice.js');
+  for (const text of Object.values(PRACTICE_TABLES)) assert.equal(inspectTable(text).error, undefined);
+  const res = {};
+  for (const q of PRACTICE_QUERIES) {
+    res[q.title] = objs(await run(q.sql, PRACTICE_TABLES));
+  }
+  assert.equal(res['Look at a table'].length, 12);
+  assert.equal(res['Look at a table'][10].city, null); // Kim Le has no city
+  assert.deepEqual(res['Filter and sort'].map((r) => r.name), ['Ana Lim', 'Chloe Ng', 'Grace Ho', 'Leo Wong']);
+  assert.deepEqual(res['Count per group'][0], { status: 'delivered', orders: 16 });
+  assert.deepEqual(res['Join tables'].slice(0, 2).map((r) => [r.name, r.revenue]), [['Ana Lim', 490.7], ['Eva Cruz', 474.5]]);
+  assert.deepEqual(res['Who never ordered (LEFT JOIN)'].map((r) => r.name), ['Leo Wong']);
+  assert.deepEqual(res['Revenue per month'].map((r) => [r.month, r.revenue]).slice(0, 2), [[day('2024-01-01'), 150.9], [day('2024-02-01'), 516]]);
+  assert.deepEqual(res['Best seller per category (CTEs)'].map((r) => [r.category, r.name, r.units]), [
+    ['Accessories', 'Backpack', 10], ['Electronics', 'Mechanical Keyboard', 15], ['Home', 'Coffee Mug', 9], ['Stationery', 'Gel Pens 5-pack', 12],
+  ]);
+});
+
+test('SUM of integers is INT64, as in BigQuery, and keeps the row order', async () => {
+  const r = await run(`SELECT user_id, SUM(order_id) AS s, SUM(order_id) OVER () AS total, SUM(amount) AS amt
+    FROM \`proj.shop.orders\` GROUP BY user_id, order_id ORDER BY s DESC`, DATA);
+  assert.deepEqual(r.fields.map((f) => f.type), ['Int64', 'Int64', 'Int64', 'Float64']);
+  assert.deepEqual(objs(r).map((x) => [x.s, x.total]), [[4, 10], [3, 10], [2, 10], [1, 10]]);
+  // With no HUGEINT column the query runs unwrapped.
+  const { fields } = await run('SELECT 1 AS one', DATA);
+  assert.equal(fields[0].type, 'Int32');
+});

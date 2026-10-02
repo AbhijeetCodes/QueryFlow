@@ -71,6 +71,20 @@ export function cleanError(err) {
   return { text: head, rel: lineInfo ? +lineInfo[1] : null, detail: lines.slice(1).join('\n').trim() };
 }
 
+// BigQuery's SUM of INT64 is INT64; DuckDB's is a 128-bit HUGEINT, which comes
+// back as a float. Cast such result columns to BIGINT, from DuckDB's own column types.
+async function int64Sums(driver, sql) {
+  let cols;
+  try {
+    cols = (await driver.query(`DESCRIBE ${sql}`)).toArray().map((r) => [String(r.column_name), String(r.column_type)]);
+  } catch { return sql; } // not a plain query: run it as written
+  const huge = cols.filter(([, t]) => t === 'HUGEINT').map(([n]) => n);
+  const names = new Set(cols.map(([n]) => n.toLowerCase()));
+  if (!huge.length || names.size < cols.length) return sql;
+  const q = (n) => `"${n.replace(/"/g, '""')}"`;
+  return `SELECT * REPLACE (${huge.map((n) => `CAST(${q(n)} AS BIGINT) AS ${q(n)}`).join(', ')})\nFROM (\n${sql.replace(/;\s*$/, '')}\n) AS qf_result`;
+}
+
 /** Run a plan. Returns { fields, rows, truncated, ms, error? }. */
 export async function executePlan(plan, driver, { maxRows = LIMITS.resultRows } = {}) {
   const t0 = performance.now();
@@ -93,7 +107,7 @@ export async function executePlan(plan, driver, { maxRows = LIMITS.resultRows } 
       const st = plan.statements[k];
       if (st.kind === 'skip' || !st.sql) continue;
       try {
-        if (k === plan.result) result = await driver.stream(st.sql, maxRows);
+        if (k === plan.result) result = await driver.stream(await int64Sums(driver, st.sql), maxRows);
         else await driver.query(st.sql);
       } catch (err) {
         const e = cleanError(err);

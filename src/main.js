@@ -156,7 +156,14 @@ let runMod = null;
 const runEl = () => document.querySelector('.run-view');
 function loadRun(el = runEl()) {
   return (runMod ??= import('./run-panel.js').then(({ createRunPanel }) => {
-    runPanel = createRunPanel(el, { view, toast, getAnalysis: () => analyzeDoc(view.state.doc), isBigQuery });
+    runPanel = createRunPanel(el, {
+      view, toast, getAnalysis: () => analyzeDoc(view.state.doc), isBigQuery,
+      // A practice example: BigQuery SQL, so it switches the dialect too.
+      openQuery: async (text, note) => {
+        if (!isBigQuery()) await setDialect('bigquery', { quiet: true });
+        await loadQuery(text, note, { format: false, detect: false });
+      },
+    });
     return runPanel;
   }));
 }
@@ -480,7 +487,7 @@ document.addEventListener('keydown', (e) => {
   // Let the promote form's own name / default inputs keep native text undo.
   if (t.closest?.('.promote')) return;
   // …and the Run tab's test tables and parameter values.
-  if (t.closest?.('.run-view')) return;
+  if (t.closest?.('.run-view, .tt-modal')) return;
   e.preventDefault();
   runHistory(isUndo ? 'undo' : 'redo');
 }, true);

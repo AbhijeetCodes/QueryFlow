@@ -539,17 +539,5 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
     if (e.key === 'Escape' && box) { box.hidden = true; box.closest('.row')?.querySelector('[data-act="promote-open"]')?.focus(); }
   });
 
-  // Opens the "→ Variable" form of a query parameter (from Results' "Make @x a variable").
-  function openParam(name) {
-    if (stepFocus) { onPickStep?.(null); focusStep(null); }
-    const i = analysis?.params.findIndex((p) => '@' + p.name.toLowerCase() === name.toLowerCase().replace(/^@?/, '@'));
-    const rowEl = i >= 0 && root.querySelector(`[data-key="param:${i}"]`);
-    if (!rowEl) return;
-    const body = rowEl.closest('.sec-body');
-    if (body?.hidden) body.previousElementSibling.querySelector('[data-act="toggle-sec"]').click();
-    rowEl.scrollIntoView({ block: 'nearest' });
-    if (rowEl.querySelector('.promote').hidden) rowEl.querySelector('[data-act="promote-open"]').click();
-  }
-
-  return { update, focusStep, openParam };
+  return { update, focusStep };
 }

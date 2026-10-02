@@ -94,3 +94,94 @@ export function quoteTable(full, id) {
 
 /** An identifier with its quotes taken off (`x`, "x"). */
 export const bareName = (s) => String(s ?? '').replace(/[`"]/g, '');
+
+// ---- detection ------------------------------------------------------------------
+// Clues that a query was written for one dialect: [dialect, weight, label, pattern].
+// `raw` patterns look at string contents too; the rest see strings as '' so a
+// value like '#1' or 'a::b' can't vote.
+const CLUES = [
+  ['bigquery', 3, 'backtick project.dataset paths', /`[\w-]+\.[\w-]+(\.[\w-]+)?`/],
+  ['bigquery', 3, 'DECLARE … DEFAULT', /\bDECLARE\s+\w+(\s*,\s*\w+)*\s+[A-Za-z][\w<>, ]*?\s+DEFAULT\b/i],
+  ['bigquery', 2, 'QUALIFY', /\bQUALIFY\b/i],
+  ['bigquery', 2, 'SAFE_ functions', /\bSAFE(_CAST|_DIVIDE|\.)/i],
+  ['bigquery', 2, 'BigQuery types', /\b(INT64|FLOAT64|BIGNUMERIC)\b|\b(STRUCT|ARRAY)\s*</i],
+  ['bigquery', 3, 'partition pseudo-columns', /\b_(PARTITIONTIME|PARTITIONDATE|TABLE_SUFFIX)\b/i],
+  ['bigquery', 2, 'BigQuery date functions', /\b(TIMESTAMP|DATETIME)_(SUB|ADD|DIFF|TRUNC)\s*\(|\b(FORMAT|PARSE)_(DATE|TIMESTAMP|DATETIME)\s*\(|\bGENERATE_DATE_ARRAY\b|\bCOUNTIF\s*\(/i],
+  ['bigquery', 3, 'CREATE TEMP FUNCTION', /\bCREATE\s+(OR\s+REPLACE\s+)?TEMP(ORARY)?\s+FUNCTION\b/i],
+  ['bigquery', 3, 'FOR SYSTEM_TIME AS OF', /\bFOR\s+SYSTEM_TIME\b/i],
+  ['bigquery', 2, 'SELECT * EXCEPT (…)', /\*\s*EXCEPT\s*\(\s*(?!SELECT\b|WITH\b|\()[A-Za-z_`]/i],
+  ['bigquery', 2, 'DATE_TRUNC(x, MONTH)', /\bDATE_TRUNC\s*\([^()']*,\s*(DAY|WEEK|ISOWEEK|MONTH|QUARTER|YEAR)\s*\)/i],
+  ['postgres', 3, ':: casts', /[\w)'\]]\s*::\s*[A-Za-z_]/],
+  ['postgres', 3, '$$ strings', /\$\w*\$[\s\S]*?\$\w*\$/, 'raw'],
+  ['postgres', 2, '$1 parameters', /\$\d+\b/],
+  ['postgres', 3, 'DISTINCT ON', /\bDISTINCT\s+ON\s*\(/i],
+  ['postgres', 2, 'ILIKE', /\bILIKE\b/i],
+  ['postgres', 2, "INTERVAL '7 days'", /\bINTERVAL\s+'\s*-?\d+\s*[a-z]+\s*'/i, 'raw'],
+  ['postgres', 2, "date_trunc('month', …)", /\bDATE_TRUNC\s*\(\s*'/i, 'raw'],
+  ['postgres', 2, 'generate_series', /\bGENERATE_SERIES\s*\(/i],
+  ['postgres', 2, 'Postgres types', /\b(JSONB|TIMESTAMPTZ|BIGSERIAL|SERIAL)\b/i],
+  ['postgres', 2, 'RETURNING', /\bRETURNING\b/i],
+  ['mysql', 3, 'SET @variables', /\bSET\s+@\w+\s*:?=/i],
+  ['mysql', 3, ':= assignments', /@\w+\s*:=/],
+  ['mysql', 3, '`db`.`table` names', /`[^`.\n]+`\.`[^`\n]+`/],
+  ['mysql', 2, 'MySQL date functions', /\b(DATE_FORMAT|STR_TO_DATE|UNIX_TIMESTAMP|FROM_UNIXTIME)\s*\(/i],
+  ['mysql', 3, 'CURDATE()', /\bCURDATE\s*\(/i],
+  ['mysql', 3, 'GROUP_CONCAT', /\bGROUP_CONCAT\s*\(/i],
+  ['mysql', 3, 'LIMIT offset, count', /\bLIMIT\s+\d+\s*,\s*\d+/i],
+  ['mysql', 3, 'MySQL table options', /\b(AUTO_INCREMENT|STRAIGHT_JOIN|UNSIGNED|TINYINT|MEDIUMINT)\b|\bENGINE\s*=/i],
+];
+
+// The text without comments, and a copy with string contents removed too.
+function scrub(src) {
+  let raw = '';
+  let code = '';
+  const n = src.length;
+  let lineStart = true; // only blanks so far on this line
+  for (let i = 0; i < n;) {
+    const c = src[i];
+    if (c === '\n') lineStart = true;
+    else if (c !== ' ' && c !== '\t' && c !== '#') lineStart = false;
+    // # starts a comment at the start of a line or before a space (Postgres uses it as an operator)
+    if ((c === '-' && src[i + 1] === '-') || (c === '#' && (lineStart || /\s/.test(src[i + 1] ?? ' ')))) {
+      while (i < n && src[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && src[i + 1] === '*') {
+      const end = src.indexOf('*/', i + 2);
+      i = end < 0 ? n : end + 2;
+      raw += ' ';
+      code += ' ';
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      while (j < n && src[j] !== c && src[j] !== '\n') j += src[j] === '\\' ? 2 : 1;
+      raw += src.slice(i, j + 1);
+      code += c + c;
+      i = j + 1;
+      continue;
+    }
+    raw += c;
+    code += c;
+    i++;
+  }
+  return { raw, code };
+}
+
+/**
+ * The dialect a query is clearly written in: { id, reasons } or null when the
+ * clues are too few or point more than one way.
+ */
+export function detectDialect(src) {
+  const { raw, code } = scrub(String(src ?? ''));
+  const score = { bigquery: 0, postgres: 0, mysql: 0 };
+  const reasons = { bigquery: [], postgres: [], mysql: [] };
+  for (const [id, weight, label, re, on] of CLUES) {
+    if (!re.test(on === 'raw' ? raw : code)) continue;
+    score[id] += weight;
+    reasons[id].push(label);
+  }
+  const [best, second] = Object.entries(score).sort((a, b) => b[1] - a[1]);
+  if (best[1] < 3 || best[1] - second[1] < 2) return null;
+  return { id: best[0], reasons: reasons[best[0]] };
+}

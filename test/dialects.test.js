@@ -4,7 +4,7 @@ import { tokenize, unquoteIdent } from '../src/tokenizer.js';
 import { analyze } from '../src/analyzer.js';
 import { formatSql } from '../src/format.js';
 import { symbolAt, renameEdits, canRename } from '../src/symbols.js';
-import { quoteTable } from '../src/dialect.js';
+import { quoteTable, detectDialect } from '../src/dialect.js';
 import { SAMPLES } from '../src/sample.js';
 
 const toks = (src, d) => tokenize(src, d).filter((t) => t.t !== 'ws').map((t) => `${t.t}:${t.s}`);
@@ -135,4 +135,25 @@ test('table names are quoted the way each dialect writes them', () => {
   assert.equal(quoteTable('proj.ds.t', 'bigquery'), '`proj.ds.t`');
   assert.equal(quoteTable('public.Orders', 'postgres'), 'public."Orders"');
   assert.equal(quoteTable('shop.order items', 'mysql'), 'shop.`order items`');
+});
+
+test('detectDialect: clear clues pick a dialect, weak or mixed ones pick none', () => {
+  const id = (sql) => detectDialect(sql)?.id ?? null;
+  for (const d of ['bigquery', 'postgres', 'mysql']) assert.equal(id(SAMPLES[d]), d);
+  assert.equal(id("SELECT * FROM `proj.ds.events` WHERE _PARTITIONDATE >= '2024-01-01'"), 'bigquery');
+  assert.equal(id('SELECT * EXCEPT (secret) FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY id) = 1'), 'bigquery');
+  assert.equal(id("SELECT id::text FROM t WHERE name ILIKE '%x%'"), 'postgres');
+  assert.equal(id("SELECT date_trunc('month', created_at) FROM t WHERE created_at > now() - interval '7 days'"), 'postgres');
+  assert.equal(id('SELECT * FROM orders LIMIT 10, 20'), 'mysql');
+  assert.equal(id('SELECT `shop`.`orders`.id FROM `shop`.`orders`'), 'mysql');
+  assert.deepEqual(detectDialect("SELECT DATE_FORMAT(d, '%Y') FROM t WHERE d > CURDATE()"), { id: 'mysql', reasons: ['MySQL date functions', 'CURDATE()'] });
+  assert.equal(id("SELECT DATE_FORMAT(d, '%Y') FROM t"), null); // one weak clue is not enough
+  // Plain SQL that runs anywhere, or too little to go on
+  assert.equal(id('SELECT 1'), null);
+  assert.equal(id('SELECT a FROM t WHERE d >= DATE_SUB(CURRENT_DATE, INTERVAL 7 DAY) AND x IN (SELECT y FROM u)'), null);
+  assert.equal(id('SELECT a FROM t UNION SELECT a FROM u EXCEPT (SELECT a FROM v)'), null);
+  // Clues inside comments and strings don't count
+  assert.equal(id("-- try ::casts, QUALIFY, LIMIT 1, 2\nSELECT 'a::b', '#1 GROUP_CONCAT(' FROM t /* DISTINCT ON ( */"), null);
+  // Clues for two dialects at once: no switch
+  assert.equal(id('SELECT x::date FROM `proj.ds.t`'), null);
 });

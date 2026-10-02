@@ -74,6 +74,11 @@ highlighted, formatted and checked; the graph, steps, rename and previews work t
 
 Switching dialect re-reads the same text; an untouched sample query is swapped for that dialect's sample.
 
+**Detect dialect on paste** (on by default, in the ⋯ menu): pasting or opening a whole query that
+clearly belongs to another dialect switches to it, and the toast says why (`:: casts`,
+`` `project.dataset` `` paths, `SET @variables`, `LIMIT 10, 20`, …). Clues inside comments and strings
+don't count, and SQL that runs anywhere, or has clues for two dialects, leaves the choice alone.
+
 ## Features
 
 ### Navigate and refactor

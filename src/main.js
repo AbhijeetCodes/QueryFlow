@@ -7,7 +7,7 @@ import { analyzeDoc } from './analyzer.js';
 import { createVarsPanel } from './vars-panel.js';
 import { createGraphPanel } from './graph-panel.js';
 import { SAMPLES } from './sample.js';
-import { DIALECTS, dialectOf, currentDialect, setCurrentDialect } from './dialect.js';
+import { DIALECTS, dialectOf, currentDialect, setCurrentDialect, detectDialect } from './dialect.js';
 import { diffLines, diffStats } from './diff.js';
 import { previewSql, cteAt } from './symbols.js';
 import { encodeShare, decodeShare } from './share.js';
@@ -52,7 +52,7 @@ async function formatDoc(view, { quiet = false, note = '' } = {}) {
     toast(`Couldn't format: ${String(err.message || err).split('\n')[0]}`, 'error');
     return;
   }
-  if (out === src) { if (!quiet) toast('Already formatted'); return; }
+  if (out === src) { if (!quiet) toast('Already formatted'); return false; }
   // Replace only the differing middle so the cursor and scroll stay put.
   let a = 0;
   while (a < src.length && a < out.length && src[a] === out[a]) a++;
@@ -60,6 +60,7 @@ async function formatDoc(view, { quiet = false, note = '' } = {}) {
   while (b < src.length - a && b < out.length - a && src[src.length - 1 - b] === out[out.length - 1 - b]) b++;
   view.dispatch({ changes: { from: a, to: src.length - b, insert: out.slice(a, out.length - b) }, userEvent: 'format' });
   toast(note || 'Formatted · ⌘Z to undo');
+  return true;
 }
 
 async function writeClipboard(text, message) {
@@ -89,6 +90,7 @@ function copyAll(view) {
 
 // ---- editor ----------------------------------------------------------------
 let formatOnPaste = store.get('formatOnPaste', '1') === '1';
+let detectOnPaste = store.get('detectDialect', '1') === '1';
 let reviewBeforeCopy = store.get('reviewBeforeCopy', '1') === '1';
 const saved = store.get('doc', null);
 let initial = saved ?? SAMPLES[currentDialect()];
@@ -134,7 +136,9 @@ const view = createEditor(document.getElementById('editor'), {
     // Only a paste of (nearly) the whole query formats it and becomes "the original".
     if (before === 0 || inserted >= after * 0.9) {
       setTimeout(async () => {
-        if (formatOnPaste) await formatDoc(view, { quiet: true, note: 'Pasted & formatted · ⌘Z to see the original' });
+        const switched = await detectFor(view.state.doc.toString());
+        const formatted = formatOnPaste && await formatDoc(view, { quiet: true, note: switched + 'Pasted & formatted · ⌘Z to see the original' });
+        if (switched && !formatted) toast(switched + 'pick another above if that is wrong');
         setOriginal(view.state.doc.toString());
       }, 0);
     }
@@ -183,11 +187,12 @@ function previewCte(id) {
 }
 
 // ---- load a whole query (paste button, file, shared link) --------------------------
-// One transaction, so ⌘Z brings back what was there. `format` follows "Format on paste".
-async function loadQuery(text, note, { format = formatOnPaste } = {}) {
+// One transaction, so ⌘Z brings back what was there. `format` follows "Format on paste";
+// `detect` switches the dialect when the query clearly reads as another one.
+async function loadQuery(text, note, { format = formatOnPaste, detect = true } = {}) {
   view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: 'input.replace' });
-  if (format) await formatDoc(view, { quiet: true, note });
-  else toast(note.replace(/^Pasted & formatted/, 'Loaded'));
+  const switched = detect ? await detectFor(text) : '';
+  if (!(format && await formatDoc(view, { quiet: true, note: switched + note }))) toast(switched + note.replace(/^Pasted & formatted/, 'Loaded'));
   setOriginal(view.state.doc.toString());
   view.focus();
 }
@@ -239,9 +244,9 @@ async function openShared() {
   if (shared == null) return;
   history.replaceState(null, '', location.href.split('#')[0]);
   const switched = shared.dialect !== currentDialect() && DIALECTS[shared.dialect];
-  if (switched) await setDialect(shared.dialect, { keepSample: true });
+  if (switched) await setDialect(shared.dialect, { quiet: true });
   if (shared.text === view.state.doc.toString()) { if (switched) toast(`Switched to ${engine()} for the shared query`); return; }
-  await loadQuery(shared.text, `Opened the shared ${switched ? engine() + ' ' : ''}query · ⌘Z brings back yours`, { format: false });
+  await loadQuery(shared.text, `Opened the shared ${switched ? engine() + ' ' : ''}query · ⌘Z brings back yours`, { format: false, detect: false });
 }
 addEventListener('hashchange', openShared);
 
@@ -324,6 +329,12 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
     fopItem.setAttribute('aria-checked', String(formatOnPaste));
     return;
   }
+  if (act === 'detect-dialect') {
+    detectOnPaste = !detectOnPaste;
+    store.set('detectDialect', detectOnPaste ? '1' : '0');
+    detectItem.setAttribute('aria-checked', String(detectOnPaste));
+    return;
+  }
   if (e.target.closest('.theme-menu')) toggleThemeMenu(false);
   if (act === 'format') formatDoc(view);
   if (act === 'copy') copyAll(view);
@@ -372,12 +383,13 @@ async function loadSample() {
   setOriginal(s);
 }
 
-async function setDialect(id, { keepSample = false } = {}) {
+// `quiet`: the caller loads its own text and says what happened (no sample swap, no toast).
+async function setDialect(id, { quiet = false } = {}) {
   const old = currentDialect();
   if (!DIALECTS[id] || id === old) return;
   const doc = view.state.doc.toString();
   let wasSample = false;
-  if (!keepSample) {
+  if (!quiet) {
     try { wasSample = doc === SAMPLES[old] || doc === await formatSql(SAMPLES[old], old); } catch { /* not the sample */ }
   }
   store.set('dialect', id);
@@ -385,7 +397,17 @@ async function setDialect(id, { keepSample = false } = {}) {
   setEditorDialect(view, id);
   if (wasSample) await loadSample();
   refresh();
-  if (!keepSample) toast(wasSample ? `Loaded the ${engine()} sample query` : `Reading the query as ${engine()}`);
+  if (!quiet) toast(wasSample ? `Loaded the ${engine()} sample query` : `Reading the query as ${engine()}`);
+}
+
+// A whole query pasted or opened that clearly reads as another dialect switches to it
+// (⌘Z undoes the paste, not the switch). Returns the start of a toast, or ''.
+async function detectFor(text) {
+  if (!detectOnPaste) return '';
+  const d = detectDialect(text);
+  if (!d || d.id === currentDialect()) return '';
+  await setDialect(d.id, { quiet: true });
+  return `Switched to ${engine()} (${d.reasons.slice(0, 2).join(', ')}) · `;
 }
 
 // ---- undo / redo ---------------------------------------------------------------
@@ -473,6 +495,7 @@ themeMenu.innerHTML =
   actItem('run', 'Run on test data', '⌘↵') +
   '<div class="tm-sep"></div>' + actItem('sample', 'Load sample query') + actItem('clear', 'Clear editor') +
   `<div class="tm-sep"></div><button class="tm-item tm-act" role="menuitemcheckbox" data-act="format-on-paste"><span class="tm-text"><b>Format on paste</b></span><span class="tm-check">✓</span></button>` +
+  `<button class="tm-item tm-act" role="menuitemcheckbox" data-act="detect-dialect"><span class="tm-text"><b>Detect dialect on paste</b></span><span class="tm-check">✓</span></button>` +
   '<div class="tm-sep"></div><div class="tm-group">Theme</div>' +
   menuItem('system', 'Match system', 'Paper or Midnight', '<span class="tsw system"></span>') +
   THEMES.map((t) => menuItem(t.id, t.name, `${t.kind} · ${t.note}`, swatch(t.id))).join('');
@@ -507,6 +530,8 @@ sysDark.addEventListener('change', applyTheme);
 
 const fopItem = themeMenu.querySelector('[data-act="format-on-paste"]');
 fopItem.setAttribute('aria-checked', String(formatOnPaste));
+const detectItem = themeMenu.querySelector('[data-act="detect-dialect"]');
+detectItem.setAttribute('aria-checked', String(detectOnPaste));
 
 // ---- resizable panes -------------------------------------------------------
 const layoutEl = document.querySelector('.layout');

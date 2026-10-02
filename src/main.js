@@ -415,6 +415,7 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
     toast('Cleared · ⌘Z to undo');
   }
   if (act === 'theme') toggleThemeMenu();
+  if (act === 'bug') toggleBugMenu();
 });
 
 // ---- dialect -------------------------------------------------------------------
@@ -636,6 +637,65 @@ const fopItem = themeMenu.querySelector('[data-act="format-on-paste"]');
 fopItem.setAttribute('aria-checked', String(formatOnPaste));
 const detectItem = themeMenu.querySelector('[data-act="detect-dialect"]');
 detectItem.setAttribute('aria-checked', String(detectOnPaste));
+
+// ---- report a bug -------------------------------------------------------------
+// Two ways in: a GitHub issue for people with an account, or an email (Gmail,
+// Outlook on the web, the mail app, or just the address) for anyone.
+// Both open with the same template and the dialect filled in; the query itself is
+// never added, so nothing leaves the browser unless the reporter pastes it.
+const REPORT_GITHUB = 'https://github.com/AbhijeetCodes/QueryFlow/issues/new';
+const REPORT_EMAIL = 'abhijeetonair+queryflow@gmail.com';
+const bugBtn = document.querySelector('[data-act="bug"]');
+const bugMenu = document.querySelector('.bug-menu');
+
+// Markdown for GitHub, plain text for email.
+function reportBody(md) {
+  const b = (t) => (md ? `**${t}**` : t);
+  return `${b('What happened')}\n\n\n${b('What you expected')}\n\n\n` +
+    `${b('SQL to reproduce')} (a small example, with nothing private in it)\n\n${md ? '```sql\n\n```' : ''}\n\n` +
+    `${b('Dialect:')} ${dialectOf(currentDialect()).name}\n${b('Browser:')} \n`;
+}
+function toggleBugMenu(open = bugMenu.hidden) {
+  if (open) {
+    const e = encodeURIComponent;
+    const to = e(REPORT_EMAIL), subject = e('QueryFlow bug: '), body = e(reportBody(false));
+    const links = {
+      github: `${REPORT_GITHUB}?labels=bug&body=${e(reportBody(true))}`,
+      gmail: `https://mail.google.com/mail/?view=cm&fs=1&to=${to}&su=${subject}&body=${body}`,
+      outlook: `https://outlook.live.com/mail/0/deeplink/compose?to=${to}&subject=${subject}&body=${body}`,
+      mailto: `mailto:${REPORT_EMAIL}?subject=${subject}&body=${body}`,
+    };
+    for (const [k, href] of Object.entries(links)) bugMenu.querySelector(`[data-report="${k}"]`).href = href;
+  }
+  bugMenu.hidden = !open;
+  bugBtn.setAttribute('aria-expanded', String(open));
+  if (open) bugMenu.querySelector('.tm-item').focus();
+}
+bugMenu.addEventListener('click', async (e) => {
+  const item = e.target.closest('.tm-item');
+  if (!item) return;
+  toggleBugMenu(false);
+  if (item.dataset.report === 'copy') {
+    try {
+      await navigator.clipboard.writeText(REPORT_EMAIL);
+      toast(`Copied ${REPORT_EMAIL}`);
+    } catch {
+      toast(`Email ${REPORT_EMAIL}`);
+    }
+  }
+});
+bugMenu.addEventListener('keydown', (e) => {
+  const items = [...bugMenu.querySelectorAll('.tm-item')];
+  const i = items.indexOf(document.activeElement);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    items[(i + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus();
+  }
+  if (e.key === 'Escape') { toggleBugMenu(false); bugBtn.focus(); }
+});
+document.addEventListener('pointerdown', (e) => {
+  if (!bugMenu.hidden && !e.target.closest('.bug-pick')) toggleBugMenu(false);
+});
 
 // ---- resizable panes -------------------------------------------------------
 const layoutEl = document.querySelector('.layout');

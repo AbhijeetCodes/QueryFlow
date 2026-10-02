@@ -1,11 +1,11 @@
 # <img src="public/logo.svg" width="28" height="28" alt="" align="top"> QueryFlow
 
-A fast, lightweight SQL editor for **reading and editing** big BigQuery queries,
-right in the browser. Paste an old query and it formats it, draws how the tables
+A fast, lightweight SQL editor for **reading and editing** big BigQuery, PostgreSQL
+and MySQL queries, right in the browser. Paste an old query and it formats it, draws how the tables
 join, and lists every variable and hardcoded filter value so you can change them
 in one place. It works like a code editor for SQL: hover a name to see what it is,
 jump to where a CTE or alias is defined, rename it everywhere, copy a ready-to-run
-preview of any CTE, and share the query as a link. Then copy the SQL back into BigQuery.
+preview of any CTE, and share the query as a link. Then copy the SQL back into your database.
 
 Everything runs client-side from the SQL text: no server, no login, no database
 connection. Your query stays in your browser (in `localStorage`). A share link
@@ -55,7 +55,23 @@ All of them, and GitHub Pages, can also serve a custom domain you own.
 
 | Left | Right top | Right bottom |
 |---|---|---|
-| Editor: BigQuery highlighting, lint squiggles, folding, autocomplete, hover cards, and a sticky header naming the CTE you're scrolled into | **Variables** (`DECLARE`), **@parameters**, **hardcoded filter values**, **date windows** | **Steps** (the query as a top-to-bottom recipe), **Graph** (tables → CTEs → output) and a **Tables** list |
+| Editor: highlighting for the chosen dialect, lint squiggles, folding, autocomplete, hover cards, and a sticky header naming the CTE you're scrolled into | **Variables** (`DECLARE`, `SET @var`, params CTE), **parameters**, **hardcoded filter values**, **date windows** | **Steps** (the query as a top-to-bottom recipe), **Graph** (tables → CTEs → output) and a **Tables** list |
+
+## Dialects
+
+Pick **BigQuery**, **PostgreSQL** or **MySQL** next to the logo. The choice is remembered and
+travels with share links. It decides how the text is read (quotes, comments, parameters),
+highlighted, formatted and checked; the graph, steps, rename and previews work the same in all three.
+
+| | BigQuery | PostgreSQL | MySQL |
+|---|---|---|---|
+| Quoted names | `` `proj.ds.t` `` | `"Name"` | `` `name` `` |
+| Variables | `DECLARE x TYPE DEFAULT …` | none in plain SQL: a params CTE plays that role | `SET @x = …` |
+| Parameters | `@name` | `$1`, `:name` | `@x` that no `SET` defines |
+| Also understood | `QUALIFY`, `UNNEST`, `FOR SYSTEM_TIME AS OF` | `::` casts, `$$` strings, `DISTINCT ON` (a dedupe), `LATERAL`, `CURRENT_DATE - INTERVAL '7 days'` | `#` comments, `:=`, `DATE_SUB(CURDATE(), INTERVAL 7 DAY)`, `CREATE TABLE t SELECT …` |
+| BigQuery-only lint | `UNION` needs ALL / DISTINCT, DECLARE first, `SELECT *` billing, legacy `[p:d.t]`, variable shadowed by a column | – | – |
+
+Switching dialect re-reads the same text; an untouched sample query is swapped for that dialect's sample.
 
 ## Features
 
@@ -79,9 +95,9 @@ All of them, and GitHub Pages, can also serve a custom domain you own.
 ### Variables and filter values
 
 - **Edit a value on the right** and every occurrence in the SQL changes as you type.
-- **→ Variable** on a hardcoded value or `@param` adds `DECLARE v_x TYPE DEFAULT …;` at the top and replaces every occurrence.
+- **→ Variable** on a hardcoded value or parameter adds `DECLARE v_x TYPE DEFAULT …;` (MySQL: `SET @v_x = …;`) at the top and replaces every occurrence. PostgreSQL has no script variables, so there it isn't offered.
 - **use start_date** appears when a hardcoded value equals an existing variable's value.
-- **→ all to variables**: one click turns every hardcoded filter value into a `DECLARE`. An all-literal `IN (…)` list becomes an ARRAY variable used as `IN UNNEST(v)`, and a value equal to an existing variable reuses it. One ⌘Z undoes it.
+- **→ all to variables**: one click turns every hardcoded filter value into a `DECLARE` (MySQL: `SET @…`). In BigQuery an all-literal `IN (…)` list becomes an ARRAY variable used as `IN UNNEST(v)`, and a value equal to an existing variable reuses it. One ⌘Z undoes it.
 - **Params CTEs**: a CTE with no FROM, like `params AS (SELECT DATE '2025-01-01' AS start_date, 'SG' AS country)`, is treated as a set of constants. Its values are editable in the Variables panel, with the comment next to each value shown as a hint. Its cross-join edges are hidden, each step that reads it gets a `uses params` chip, and cross-joining it doesn't trigger the comma-join warning, since it's a single row.
 - **Hover** a row to highlight its uses. **Click** a name or the `×N` count to jump through them.
 
@@ -98,11 +114,11 @@ All of them, and GitHub Pages, can also serve a custom domain you own.
 
 ### Checks
 
-- **Date windows**: every date bound in WHERE / ON / HAVING / QUALIFY is resolved to a day, whether it comes from a literal, a DECLARE variable, a params CTE value, `DATE_SUB(…, INTERVAL n DAY)` or `CURRENT_DATE()`. From these each step gets a window. The *Date windows* section, the lint and the date chips on graph nodes flag a step whose start or end differs from the others. They also flag a partition filter (`_PARTITIONDATE`, `_PARTITIONTIME`, `_TABLE_SUFFIX`) that is narrower than the window, which silently drops rows, and one far wider than needed (extra bytes). Steps that share the same window and have no issue collapse into one row; click a date to step through them. "align" fixes a mismatched hardcoded date. Exclusive bounds count as inclusive days: `< '2024-04-01'` ends on 03-31.
+- **Date windows**: every date bound in WHERE / ON / HAVING / QUALIFY is resolved to a day, whether it comes from a literal, a variable, a params CTE value, `DATE_SUB(…, INTERVAL n DAY)`, `CURRENT_DATE() / NOW()` or `CURRENT_DATE - INTERVAL '7 days'`. From these each step gets a window. The *Date windows* section, the lint and the date chips on graph nodes flag a step whose start or end differs from the others. They also flag a partition filter (`_PARTITIONDATE`, `_PARTITIONTIME`, `_TABLE_SUFFIX`) that is narrower than the window, which silently drops rows, and one far wider than needed (extra bytes). Steps that share the same window and have no issue collapse into one row; click a date to step through them. "align" fixes a mismatched hardcoded date. Exclusive bounds count as inclusive days: `< '2024-04-01'` ends on 03-31.
 - **Joins that change the numbers**: two warnings for silent wrong answers.
   - *An outer join undone later*: a `WHERE` condition on a LEFT JOIN's columns (`WHERE b.status = 'x'`), or a later INNER JOIN on them, is false for the rows the LEFT JOIN kept with NULLs, so it drops them and the LEFT JOIN works as an INNER JOIN. Conditions that handle NULL (`IS NULL`, `OR`, `COALESCE`, `IFNULL`, `IF`, `CASE`) aren't flagged. RIGHT and FULL joins are checked the same way.
   - *Fan-out added up*: a CTE with one row per `(user_id, day)` (its GROUP BY, or a `QUALIFY ROW_NUMBER() … = 1` dedupe) joined on `user_id` alone matches each row several times. That's normal for a one-to-many join, so it's only flagged when a `SUM`, `AVG`, `COUNT` or `COUNTIF` in that step adds up columns of the repeated side. `COUNT(DISTINCT …)`, `MIN` and `MAX` are safe.
-- **Other lint**: `= NULL` (never true), `NOT IN (subquery)` with possible NULLs, `LAST_VALUE` with ORDER BY and the default frame (returns the current row), a JOIN without ON, comma joins, `ORDER BY` in a CTE without LIMIT, `SELECT *` (bills every column), a column named like a variable (the column wins), unused CTEs and variables, CTEs or aliases defined twice, DECLARE after other statements, `UNION` without ALL / DISTINCT, legacy `[project:dataset.table]` references and unbalanced parentheses. ⌘⇧M lists them all.
+- **Other lint**: `= NULL` (never true), `NOT IN (subquery)` with possible NULLs, `LAST_VALUE` with ORDER BY and the default frame (returns the current row), a JOIN without ON, comma joins, `ORDER BY` in a CTE without LIMIT, unused CTEs and variables, CTEs or aliases defined twice and unbalanced parentheses. In BigQuery also `SELECT *` (bills every column), a column named like a variable (the column wins), DECLARE after other statements, `UNION` without ALL / DISTINCT and legacy `[project:dataset.table]` references. ⌘⇧M lists them all.
 
 ### Look and feel
 
@@ -132,7 +148,8 @@ In Chrome on Windows and Linux, F12 opens the developer tools; use Ctrl-click or
 
 | File | Role |
 |---|---|
-| `src/tokenizer.js` | Tolerant GoogleSQL tokenizer; never throws |
+| `src/dialect.js` | BigQuery / PostgreSQL / MySQL: quoting, comments, parameters, variables, dialect-only lint |
+| `src/tokenizer.js` | Tolerant SQL tokenizer for the three dialects; never throws |
 | `src/analyzer.js` | Heuristic analysis: CTEs, joins, variables, filter values, date windows, lint |
 | `src/shape.js` | What each step does (filters, aggregation, dedupe, windows) |
 | `src/scope.js` | Which table or CTE an alias means at a position; CTE columns for autocomplete |

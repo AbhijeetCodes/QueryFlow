@@ -1,15 +1,16 @@
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection,
   Decoration, ViewPlugin, dropCursor, rectangularSelection, crosshairCursor } from '@codemirror/view';
-import { EditorState, StateEffect, StateField } from '@codemirror/state';
+import { EditorState, StateEffect, StateField, Compartment } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, foldGutter, foldKeymap,
   foldService, codeFolding } from '@codemirror/language';
 import { linter, lintGutter, lintKeymap } from '@codemirror/lint';
-import { sql, SQLDialect, keywordCompletionSource } from '@codemirror/lang-sql';
+import { sql, SQLDialect, PostgreSQL, MySQL, keywordCompletionSource } from '@codemirror/lang-sql';
 import { tags as t } from '@lezer/highlight';
 import { analyzeDoc } from './analyzer.js';
+import { currentDialect, setCurrentDialect, quoteTable } from './dialect.js';
 import { scopeAt, columnsOf } from './scope.js';
 import { symbolFeatures } from './symbol-ui.js';
 
@@ -55,6 +56,29 @@ export const bigQueryDialect = SQLDialect.define({
   caseInsensitiveIdentifiers: true,
 });
 
+const LANG = { bigquery: bigQueryDialect, postgres: PostgreSQL, mysql: MySQL };
+
+// Highlighting and keyword completion follow the dialect picker.
+const langSlot = new Compartment();
+let keywords = null;
+const langFor = (id) => {
+  const dialect = LANG[id] || bigQueryDialect;
+  keywords = keywordCompletionSource(dialect, true);
+  return sql({ dialect, upperCaseKeywords: true });
+};
+// Keywords and functions, except right after `name.` where only columns make sense.
+const keywordsNotAfterDot = (ctx) => (ctx.matchBefore(/\.\w*$/) ? null : keywords(ctx));
+
+// Dispatched with a dialect change: everything drawn from the analysis redraws.
+export const dialectChanged = StateEffect.define();
+const changedDialect = (u) => u.transactions.some((tr) => tr.effects.some((e) => e.is(dialectChanged)));
+
+/** Switch the editor (and analyzeDoc) to another dialect. */
+export function setEditorDialect(view, id) {
+  setCurrentDialect(id);
+  view.dispatch({ effects: [langSlot.reconfigure(langFor(currentDialect())), dialectChanged.of(currentDialect())] });
+}
+
 const highlight = HighlightStyle.define([
   { tag: t.keyword, color: 'var(--syn-keyword)' },
   { tag: [t.typeName], color: 'var(--syn-type)' },
@@ -67,8 +91,8 @@ const highlight = HighlightStyle.define([
   { tag: [t.punctuation, t.paren, t.bracket], color: 'var(--syn-punct)' },
 ]);
 
-// Backtick identifiers are strings to lang-sql; our table/CTE marks override
-// that colour where the analyzer knows better.
+// Quoted identifiers may be coloured as strings by lang-sql; our table/CTE marks
+// override that colour where the analyzer knows better.
 const theme = EditorView.theme({
   '&': { height: '100%', fontSize: '13px', backgroundColor: 'var(--editor-bg)', color: 'var(--text)' },
   '.cm-scroller': { fontFamily: 'var(--mono)', lineHeight: '1.55' },
@@ -109,7 +133,7 @@ function markDeco(cls) {
 
 const lensMarks = ViewPlugin.fromClass(class {
   constructor(view) { this.decorations = this.build(view); }
-  update(u) { if (u.docChanged) this.decorations = this.build(u.view); }
+  update(u) { if (u.docChanged || changedDialect(u)) this.decorations = this.build(u.view); }
   build(view) {
     const a = analyzeDoc(view.state.doc);
     const ranges = [];
@@ -160,7 +184,7 @@ const stickyCte = ViewPlugin.fromClass(class {
     view.scrollDOM.addEventListener('scroll', this.onScroll, { passive: true });
     this.measure();
   }
-  update(u) { if (u.docChanged || u.geometryChanged) this.measure(); }
+  update(u) { if (u.docChanged || u.geometryChanged || changedDialect(u)) this.measure(); }
   measure() {
     this.view.requestMeasure({
       key: this,
@@ -219,7 +243,7 @@ const lensLint = linter((view) => [
     message: d.message,
     source: 'QueryFlow',
   })),
-], { delay: 300 });
+], { delay: 300, needsRefresh: changedDialect });
 
 // Completions for names found in this query (CTEs, tables, aliases, variables).
 function lensCompletions(ctx) {
@@ -238,7 +262,7 @@ function lensCompletions(ctx) {
       };
     }
   }
-  const word = ctx.matchBefore(/[\w@`.-]*/);
+  const word = ctx.matchBefore(/[\w@$`".-]*/);
   if (!word || (word.from === word.to && !ctx.explicit)) return null;
   const opts = [];
   const seen = new Set();
@@ -249,10 +273,10 @@ function lensCompletions(ctx) {
   };
   for (const n of a.graph.nodes) {
     if (n.kind === 'cte') add(n.label, 'class', 'CTE');
-    else if (n.kind === 'table' && n.full) add('`' + n.full + '`', 'type', 'table');
+    else if (n.kind === 'table' && n.full) add(quoteTable(n.full, a.dialect), 'type', 'table');
   }
   for (const v of a.variables) for (const n of v.names) add(n, 'variable', v.type || 'variable');
-  for (const p of a.params) add('@' + p.name, 'variable', 'parameter');
+  for (const p of a.params) add(p.text, 'variable', 'parameter');
   // Bare column names from the tables in scope, below the query's own names.
   for (const item of scopeAt(a, word.from).values()) {
     for (const c of columnsOf(a, item) || []) {
@@ -261,15 +285,10 @@ function lensCompletions(ctx) {
       opts.push({ label: c.name, type: 'property', detail: `${c.type ? c.type + ' · ' : ''}${item.alias || ''}`.replace(/ · $/, ''), info: c.description || undefined, boost: 0 });
     }
   }
-  return { from: word.from, options: opts, validFor: /^[\w@`.-]*$/ };
+  return { from: word.from, options: opts, validFor: /^[\w@$`".-]*$/ };
 }
 
-// Keywords and functions, except right after `name.` where only columns make sense.
-const keywords = keywordCompletionSource(bigQueryDialect, true);
-const keywordsNotAfterDot = (ctx) => (ctx.matchBefore(/\.\w*$/) ? null : keywords(ctx));
-
 export function createEditor(parent, { doc, onDocChange, onPaste, onSelection, extraKeys = [], extensions = [], toast, onPreview }) {
-  const lang = sql({ dialect: bigQueryDialect, upperCaseKeywords: true });
   const state = EditorState.create({
     doc,
     extensions: [
@@ -295,7 +314,7 @@ export function createEditor(parent, { doc, onDocChange, onPaste, onSelection, e
       crosshairCursor(),
       highlightActiveLine(),
       highlightSelectionMatches(),
-      lang,
+      langSlot.of(langFor(currentDialect())),
       syntaxHighlighting(highlight),
       lensMarks,
       stickyCte,

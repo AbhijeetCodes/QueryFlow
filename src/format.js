@@ -1,4 +1,4 @@
-import { formatDialect, bigquery } from 'sql-formatter';
+import { formatDialect, bigquery, postgresql, mysql } from 'sql-formatter';
 import { tokenize } from './tokenizer.js';
 
 const TYPES = new Set(['DATE', 'DATETIME', 'TIMESTAMP', 'TIME', 'INT64', 'INTEGER', 'INT', 'STRING',
@@ -7,10 +7,18 @@ const TYPES = new Set(['DATE', 'DATETIME', 'TIMESTAMP', 'TIME', 'INT64', 'INTEGE
 const UNITS = new Set(['MICROSECOND', 'MILLISECOND', 'SECOND', 'MINUTE', 'HOUR', 'DAY', 'WEEK',
   'ISOWEEK', 'MONTH', 'QUARTER', 'YEAR', 'ISOYEAR', 'DAYOFWEEK', 'DAYOFYEAR']);
 
-export function formatSql(src) {
-  const { text, trailing } = liftTrailingComments(src);
+const FORMATTER = {
+  bigquery: { dialect: bigquery },
+  postgres: { dialect: postgresql, paramTypes: { numbered: ['$'], named: [':'] } },
+  mysql: { dialect: mysql },
+};
+
+export function formatSql(src, dialect = 'bigquery') {
+  const fmt = FORMATTER[dialect] || FORMATTER.bigquery;
+  const tok = (text) => tokenize(text, dialect);
+  const { text, trailing } = liftTrailingComments(src, tok);
   let out = formatDialect(text, {
-    dialect: bigquery,
+    ...fmt,
     keywordCase: 'upper',
     dataTypeCase: 'upper',
     functionCase: 'upper',
@@ -19,15 +27,20 @@ export function formatSql(src) {
     logicalOperatorNewline: 'before',
     expressionWidth: 60,
   });
-  out = upperTypesAndUnits(out);
-  out = explicitAliasesAndJoins(out);
-  out = reattachCommas(out);
+  out = distinctOnLine(out);
+  out = upperTypesAndUnits(out, tok);
+  out = explicitAliasesAndJoins(out, tok);
+  out = reattachCommas(out, tok);
   out = collapseShortLists(out);
-  out = hoistClauseBodies(out);
+  out = hoistClauseBodies(out, tok);
   out = collapseShortConditions(out);
-  out = restoreTrailingComments(out, trailing);
-  // keep consecutive DECLAREs together
+  out = restoreTrailingComments(out, trailing, tok);
+  // `SET\n  @x = 1;` and `LIMIT\n  10` on one line
+  out = out.replace(/^SET\n {2}([^\n]*;)$/gm, 'SET $1');
+  out = out.replace(/^(\s*)LIMIT\n\s+([^\n]+)$/gm, '$1LIMIT $2');
+  // keep consecutive DECLAREs (SET @vars) together
   out = out.replace(/^(DECLARE[^\n]*;)\n\n(?=DECLARE)/gm, '$1\n');
+  out = out.replace(/^(SET @[^\n]*;)\n\n(?=SET @)/gm, '$1\n');
   return out.endsWith('\n') ? out : out + '\n';
 }
 
@@ -46,7 +59,7 @@ function topLevelSemis(toks) {
   return out;
 }
 
-function liftTrailingComments(src) {
+function liftTrailingComments(src, tokenize) {
   const toks = tokenize(src);
   const trailing = new Map(); // semicolon number -> comment text
   const cuts = [];
@@ -64,7 +77,7 @@ function liftTrailingComments(src) {
   return { text, trailing };
 }
 
-function restoreTrailingComments(text, trailing) {
+function restoreTrailingComments(text, trailing, tokenize) {
   if (!trailing.size) return text;
   const toks = tokenize(text);
   let res = text;
@@ -77,9 +90,20 @@ function restoreTrailingComments(text, trailing) {
   return res;
 }
 
+// sql-formatter writes Postgres' DISTINCT ON across two lines:
+//     SELECT DISTINCT                SELECT DISTINCT ON (user_id)
+//       ON (user_id) user_id,   ->     user_id,
+function distinctOnLine(text) {
+  return text.replace(/^(\s*)SELECT DISTINCT\n\s+ON (\([^()\n]*\)) ?([^\n]*)$/gm,
+    (m, ind, keys, rest) => `${ind}SELECT DISTINCT ON ${keys}` + (rest ? `\n${ind}  ${rest}` : ''));
+}
+
+// Words sql-formatter leaves lower case without parentheses (Postgres / MySQL).
+const BARE_KEYWORDS = new Set(['CURRENT_DATE', 'CURRENT_TIME', 'CURRENT_TIMESTAMP', 'LOCALTIME', 'LOCALTIMESTAMP']);
+
 // sql-formatter leaves `date` in `DECLARE d date` and `day` in `INTERVAL 7 day`
 // lowercase. Upper-case them only in unambiguous type/unit positions.
-function upperTypesAndUnits(text) {
+function upperTypesAndUnits(text, tokenize) {
   const toks = tokenize(text).filter((t) => t.t !== 'ws' && t.t !== 'comment');
   const edits = [];
   let inDeclare = false;
@@ -102,7 +126,10 @@ function upperTypesAndUnits(text) {
       (prev2 && prev2.u === 'INTERVAL') ||
       (prev && prev.s === ',' && next && next.s === ')')
     );
-    if (isType || isUnit) edits.push(t);
+    const isKeyword = (t.u === 'INTERVAL' && next && (next.t === 'number' || next.t === 'string')) ||
+      (['DATE', 'TIME', 'TIMESTAMP', 'DATETIME'].includes(t.u) && next?.t === 'string' && prev?.s !== '.') ||
+      (BARE_KEYWORDS.has(t.u) && next?.s !== '(' && prev?.s !== '.');
+    if (isType || isUnit || isKeyword) edits.push(t);
   }
   let res = text;
   for (let k = edits.length - 1; k >= 0; k--) {
@@ -117,7 +144,7 @@ function upperTypesAndUnits(text) {
 //     -- note
 //   ,
 // Move it back to the end of the code line (before any inline comment).
-function reattachCommas(text) {
+function reattachCommas(text, tokenize) {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const m = /^(\s*),\s*(.*)$/.exec(lines[i]);
@@ -179,7 +206,7 @@ function collapseShortLists(text) {
   return out.join('\n');
 }
 
-// BigQuery reserved words: never an unquoted alias.
+// Reserved words (BigQuery's, which cover the common ones): never an unquoted alias.
 const RESERVED = new Set(`ALL AND ANY ARRAY AS ASC ASSERT_ROWS_MODIFIED AT BETWEEN BY CASE CAST COLLATE CONTAINS
   CREATE CROSS CUBE CURRENT DEFAULT DEFINE DESC DISTINCT ELSE END ENUM ESCAPE EXCEPT EXCLUDE EXISTS EXTRACT FALSE
   FETCH FOLLOWING FOR FROM FULL GROUP GROUPING GROUPS HASH HAVING IF IGNORE IN INNER INTERSECT INTERVAL INTO IS JOIN
@@ -195,7 +222,7 @@ const endsExpr = (t) => ['qident', 'number', 'string', 'param', 'sysvar'].includ
 
 // `FROM t u` -> `FROM t AS u`, `COUNT(*) n` -> `COUNT(*) AS n`, bare `JOIN` -> `INNER JOIN`
 // (sqlfluff AL01, AL02, AM05).
-function explicitAliasesAndJoins(text) {
+function explicitAliasesAndJoins(text, tokenize) {
   const T = tokenize(text).filter((t) => t.t !== 'ws' && t.t !== 'comment');
   const inserts = []; // { at, s }
   const frames = [{ mode: null, start: 0 }];
@@ -206,7 +233,7 @@ function explicitAliasesAndJoins(text) {
     const last = T[end - 1];
     const prev = T[end - 2];
     if (end - f.start < 2 || !last || last.t !== 'ident' || RESERVED.has(last.u)) return;
-    if (!endsExpr(prev) || prev.u === 'AS' || T[end - 3]?.s === '.' && prev.t !== 'ident') return;
+    if (!endsExpr(prev) || prev.u === 'AS' || T[end - 3]?.s === '.' && prev.t !== 'ident' && prev.t !== 'qident') return;
     if (UNITS.has(last.u) && T.slice(f.start, end).some((t) => t.u === 'INTERVAL')) return;
     inserts.push({ at: last.a, s: 'AS ' });
   };
@@ -223,6 +250,7 @@ function explicitAliasesAndJoins(text) {
     if (t.s === ',') { if (top().mode) open(i, top().mode); continue; }
     if (t.t !== 'ident') continue;
     if (t.u === 'JOIN' && !JOIN_MODS.has(T[i - 1]?.u)) inserts.push({ at: t.a, s: 'INNER ' });
+    if (t.u === 'ON' && T[i - 1]?.u === 'DISTINCT') continue; // Postgres DISTINCT ON (…)
     if (t.u === 'SELECT') open(i, 'select');
     else if (t.u === 'FROM' || t.u === 'JOIN') open(i, 'from');
     else if (t.u === 'WITH' && top().mode !== 'from') open(i, null);
@@ -237,7 +265,7 @@ function explicitAliasesAndJoins(text) {
 const indentOf = (l) => /^\s*/.exec(l)[0].length;
 
 // Lines that start inside a multi-line string or block comment: never re-indented.
-function frozenLines(text) {
+function frozenLines(text, tokenize) {
   const frozen = new Set();
   let line = 0;
   let pos = 0;
@@ -262,9 +290,9 @@ function frozenLines(text) {
 //       LEFT JOIN u AS y ON …
 // Pull the first line up next to WITH / FROM and dedent the rest, with a blank
 // line after each CTE (sqlfluff's layout).
-function hoistClauseBodies(text) {
+function hoistClauseBodies(text, tokenize) {
   const lines = text.split('\n');
-  const frozen = frozenLines(text);
+  const frozen = frozenLines(text, tokenize);
   const blankAfter = new Set();
   for (let i = 0; i < lines.length; i++) {
     const m = /^(\s*)(WITH|WITH RECURSIVE|FROM)$/.exec(lines[i]);

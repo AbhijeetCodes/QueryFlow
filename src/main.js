@@ -2,11 +2,12 @@ import './styles.css';
 import { openLintPanel } from '@codemirror/lint';
 import { EditorView } from '@codemirror/view';
 import { undo, redo, undoDepth, redoDepth } from '@codemirror/commands';
-import { createEditor } from './editor.js';
+import { createEditor, setEditorDialect } from './editor.js';
 import { analyzeDoc } from './analyzer.js';
 import { createVarsPanel } from './vars-panel.js';
 import { createGraphPanel } from './graph-panel.js';
-import { SAMPLE_SQL } from './sample.js';
+import { SAMPLES } from './sample.js';
+import { DIALECTS, dialectOf, currentDialect, setCurrentDialect } from './dialect.js';
 import { diffLines, diffStats } from './diff.js';
 import { previewSql, cteAt } from './symbols.js';
 import { encodeShare, decodeShare } from './share.js';
@@ -15,6 +16,10 @@ const store = {
   get(k, d) { try { const v = localStorage.getItem('queryflow.' + k); return v === null ? d : v; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('queryflow.' + k, v); } catch { /* private mode */ } },
 };
+
+// The dialect is set before anything reads the SQL.
+setCurrentDialect(store.get('dialect', 'bigquery'));
+const engine = () => dialectOf(currentDialect()).name;
 
 // ---- toast ---------------------------------------------------------------
 const toastEl = document.getElementById('toast');
@@ -31,8 +36,8 @@ function toast(msg, kind = 'ok') {
 // they load on first use (and when idle).
 let formatMod = null;
 const loadFormat = () => (formatMod ??= import('./format.js'));
-async function formatSql(src) {
-  return (await loadFormat()).formatSql(src);
+async function formatSql(src, dialect = currentDialect()) {
+  return (await loadFormat()).formatSql(src, dialect);
 }
 
 // ---- formatting ------------------------------------------------------------
@@ -42,7 +47,7 @@ async function formatDoc(view, { quiet = false, note = '' } = {}) {
   try {
     const fmt = await loadFormat();
     src = view.state.doc.toString(); // read after the await: typing may have changed it
-    out = fmt.formatSql(src);
+    out = fmt.formatSql(src, currentDialect());
   } catch (err) {
     toast(`Couldn't format: ${String(err.message || err).split('\n')[0]}`, 'error');
     return;
@@ -79,15 +84,15 @@ function copyAll(view) {
     openDiff(original, text);
     return;
   }
-  writeClipboard(text, `Copied ${lineCount(text)} lines, ready to paste into BigQuery`);
+  writeClipboard(text, `Copied ${lineCount(text)} lines, ready to paste into ${engine()}`);
 }
 
 // ---- editor ----------------------------------------------------------------
 let formatOnPaste = store.get('formatOnPaste', '1') === '1';
 let reviewBeforeCopy = store.get('reviewBeforeCopy', '1') === '1';
 const saved = store.get('doc', null);
-let initial = saved ?? SAMPLE_SQL;
-if (saved === null) { try { initial = await formatSql(SAMPLE_SQL); } catch { /* keep raw */ } }
+let initial = saved ?? SAMPLES[currentDialect()];
+if (saved === null) { try { initial = await formatSql(initial); } catch { /* keep raw */ } }
 
 let refreshTimer;
 let saveTimer;
@@ -153,7 +158,7 @@ const graph = createGraphPanel(document.getElementById('graph'), {
 function previewCte(id) {
   const p = previewSql(analyzeDoc(view.state.doc), id);
   if (!p) return;
-  writeClipboard(p.sql, `Copied a preview of ${p.label} (${plural(p.ctes, 'CTE')}, LIMIT 100), ready to paste into BigQuery`);
+  writeClipboard(p.sql, `Copied a preview of ${p.label} (${plural(p.ctes, 'CTE')}, LIMIT 100), ready to paste into ${engine()}`);
 }
 
 // ---- load a whole query (paste button, file, shared link) --------------------------
@@ -200,7 +205,7 @@ async function shareLink() {
   const text = view.state.doc.toString();
   if (!text.trim()) { toast('Nothing to share yet', 'error'); return; }
   let hash;
-  try { hash = await encodeShare(text); } catch { toast('This browser cannot build share links', 'error'); return; }
+  try { hash = await encodeShare(text, currentDialect()); } catch { toast('This browser cannot build share links', 'error'); return; }
   const url = location.href.split('#')[0] + hash;
   const kb = Math.round(url.length / 1024);
   await writeClipboard(url, url.length > 8000
@@ -208,12 +213,14 @@ async function shareLink() {
     : 'Link copied. The query is inside the link: nothing is uploaded.');
 }
 async function openShared() {
-  let text;
-  try { text = await decodeShare(location.hash); } catch { toast('This share link is damaged or incomplete', 'error'); }
-  if (text == null) return;
+  let shared;
+  try { shared = await decodeShare(location.hash); } catch { toast('This share link is damaged or incomplete', 'error'); }
+  if (shared == null) return;
   history.replaceState(null, '', location.href.split('#')[0]);
-  if (text === view.state.doc.toString()) return;
-  await loadQuery(text, 'Opened the shared query · ⌘Z brings back yours', { format: false });
+  const switched = shared.dialect !== currentDialect() && DIALECTS[shared.dialect];
+  if (switched) await setDialect(shared.dialect, { keepSample: true });
+  if (shared.text === view.state.doc.toString()) { if (switched) toast(`Switched to ${engine()} for the shared query`); return; }
+  await loadQuery(shared.text, `Opened the shared ${switched ? engine() + ' ' : ''}query · ⌘Z brings back yours`, { format: false });
 }
 addEventListener('hashchange', openShared);
 
@@ -241,7 +248,7 @@ function updateChangesBadge() {
 }
 let diffModal = null;
 const loadDiff = () => (diffModal ??= import('./diff-view.js').then(({ createDiffModal }) => createDiffModal({
-  onCopyEdited: (text) => writeClipboard(text, `Copied ${lineCount(text)} lines (edited), ready to paste into BigQuery`),
+  onCopyEdited: (text) => writeClipboard(text, `Copied ${lineCount(text)} lines (edited), ready to paste into ${engine()}`),
   onCopyOriginal: (text) => writeClipboard(text, `Copied the original ${lineCount(text)} lines`),
   onMarkOriginal: (text) => { setOriginal(text); toast('Current SQL is now the original'); },
   getAlways: () => reviewBeforeCopy,
@@ -316,12 +323,7 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
     const n = cteAt(analyzeDoc(view.state.doc), view.state.selection.main.head);
     if (n) previewCte(n.id); else toast('Put the cursor inside a CTE (or on its name) to preview it');
   }
-  if (act === 'sample') {
-    let s = SAMPLE_SQL;
-    try { s = await formatSql(s); } catch { /* raw */ }
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: s } });
-    setOriginal(s);
-  }
+  if (act === 'sample') await loadSample();
   if (act === 'changes') {
     if (original !== null) openDiff(original, view.state.doc.toString());
   }
@@ -332,6 +334,36 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
   }
   if (act === 'theme') toggleThemeMenu();
 });
+
+// ---- dialect -------------------------------------------------------------------
+// The picker in the toolbar. Switching re-reads the same text; an untouched
+// sample query is swapped for the new dialect's sample.
+const dialectSelect = document.querySelector('select.dialect');
+dialectSelect.value = currentDialect();
+dialectSelect.addEventListener('change', () => setDialect(dialectSelect.value));
+
+async function loadSample() {
+  let s = SAMPLES[currentDialect()];
+  try { s = await formatSql(s); } catch { /* raw */ }
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: s } });
+  setOriginal(s);
+}
+
+async function setDialect(id, { keepSample = false } = {}) {
+  const old = currentDialect();
+  if (!DIALECTS[id] || id === old) return;
+  const doc = view.state.doc.toString();
+  let wasSample = false;
+  if (!keepSample) {
+    try { wasSample = doc === SAMPLES[old] || doc === await formatSql(SAMPLES[old], old); } catch { /* not the sample */ }
+  }
+  store.set('dialect', id);
+  dialectSelect.value = id;
+  setEditorDialect(view, id);
+  if (wasSample) await loadSample();
+  refresh();
+  if (!keepSample) toast(wasSample ? `Loaded the ${engine()} sample query` : `Reading the query as ${engine()}`);
+}
 
 // ---- undo / redo ---------------------------------------------------------------
 // Every change (typing, formatting, panel edits, → variable, paste, clear) is a

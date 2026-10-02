@@ -244,13 +244,21 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--chip); pad
 .logo-q { fill: none; stroke: var(--on-accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
 .logo-node { fill: var(--on-accent); }
 .brand-name { color: var(--text); font-weight: 650; font-size: 13px; }
-.dialect { font-size: 10.5px; font-weight: 500; color: var(--text-muted); background: var(--chip); padding: 1px 7px; border-radius: 10px; }
+.dialect {
+  appearance: none; -webkit-appearance: none; margin: 0 6px 0 -4px; height: 20px; cursor: pointer;
+  font: 500 10.5px var(--sans); color: var(--text-muted); background-color: var(--chip);
+  border: 1px solid transparent; border-radius: 10px; padding: 0 18px 0 8px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 9px top 8px, right 6px top 8px; background-size: 3px 3px; background-repeat: no-repeat;
+}
+.dialect:hover { color: var(--text); border-color: var(--border); }
+.dialect:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dialect option { color: var(--text); background: var(--panel); }
 .left { container-type: inline-size; }
-/* A narrowing editor pane drops, in turn, the BigQuery tag, the "QueryFlow"
-   name (the logo stays), then undo/redo (⌘Z still works) and the cursor
+/* A narrowing editor pane drops, in turn, the "QueryFlow" name (the logo and
+   the dialect picker stay), then undo/redo (⌘Z still works) and the cursor
    position. */
-@container (max-width: 720px) { .editor-bar .dialect { display: none; } }
-@container (max-width: 620px) { .editor-bar .brand-name { display: none; } }
+@container (max-width: 680px) { .editor-bar .brand-name { display: none; } }
 @container (max-width: 540px) { .editor-bar .history, #stat-cursor, .changes-label { display: none; } }
 .actions { display: flex; align-items: center; gap: 6px; }
 /* Buttons come in four kinds: .btn (optionally .primary / .caution, and .sm),

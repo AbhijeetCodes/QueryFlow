@@ -142,7 +142,7 @@ export function shapeChips(sh) {
   if (!sh) return out;
   if (sh.dedupe) {
     out.push({ cls: 'dedupe', text: `${sh.dedupe.latest ? 'latest' : 'first'} per ${clip(sh.dedupe.per, 20)}`,
-      title: `Dedupe: keeps one row per ${sh.dedupe.per}${sh.dedupe.order ? ` (ROW_NUMBER ordered by ${sh.dedupe.order}, rn = 1)` : ''}` });
+      title: `Dedupe: keeps one row per ${sh.dedupe.per}${sh.dedupe.where === 'DISTINCT ON' ? ` (DISTINCT ON${sh.dedupe.order ? `, ordered by ${sh.dedupe.order}` : ''})` : sh.dedupe.order ? ` (ROW_NUMBER ordered by ${sh.dedupe.order}, rn = 1)` : ''}` });
   }
   if (sh.dates) {
     const d = sh.dates;

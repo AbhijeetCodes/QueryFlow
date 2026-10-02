@@ -634,7 +634,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview }) {
       <div class="detail-head">
         <span class="kind ${n.kind}">${KIND_LABEL[n.kind] || n.kind}</span>
         <b>${esc(n.label)}</b>
-        ${n.kind === 'cte' ? '<button class="mini" data-act="preview" title="Copy WITH … SELECT * FROM this CTE LIMIT 100, to run in BigQuery (⌘⌥Enter in the editor)">Copy preview</button>' : ''}
+        ${n.kind === 'cte' ? '<button class="mini" data-act="preview" title="Copy WITH … SELECT * FROM this CTE LIMIT 100, ready to run (⌘⌥Enter in the editor)">Copy preview</button>' : ''}
         <button class="mini" data-act="isolate" title="Show only what feeds this step and what it feeds (or double-click a node)">${isolate === n.id ? 'Show all' : 'Focus lineage'}</button>
         <button class="icon-btn" data-act="close" title="Close">×</button>
       </div>
@@ -654,7 +654,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview }) {
     const list = (arr, joiner = 'AND') => arr.map((t, i) => `<div class="cond">${i ? `<span class="muted">${joiner}</span> ` : ''}${code(t)}</div>`).join('');
     rows.push(['Columns', sh.star ? `all (<code>*</code>)${sh.columns > 1 ? ` + ${sh.columns - 1} more` : ''}` : `${sh.columns}`]);
     if (sh.dedupe) {
-      rows.push(['Dedupe', `keeps the <b>${sh.dedupe.latest ? 'latest' : 'first'}</b> row per ${code(sh.dedupe.per)}${sh.dedupe.order ? ` by ${code(sh.dedupe.order)}` : ''} <span class="muted">(${sh.dedupe.where === 'QUALIFY' ? 'QUALIFY' : sh.dedupe.where === 'join' ? 'rn = 1 in the join' : 'rn = 1 in WHERE'})</span>`]);
+      rows.push(['Dedupe', `keeps the <b>${sh.dedupe.latest ? 'latest' : 'first'}</b> row per ${code(sh.dedupe.per)}${sh.dedupe.order ? ` by ${code(sh.dedupe.order)}` : ''} <span class="muted">(${sh.dedupe.where === 'QUALIFY' || sh.dedupe.where === 'DISTINCT ON' ? sh.dedupe.where : sh.dedupe.where === 'join' ? 'rn = 1 in the join' : 'rn = 1 in WHERE'})</span>`]);
     }
     if (sh.filters.length) rows.push(['Filters', list(sh.filters)]);
     if (sh.groupBy.length) rows.push(['Group by', sh.groupBy.map(code).join(', ')]);

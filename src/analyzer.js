@@ -1,4 +1,5 @@
-// Heuristic, error-tolerant analysis of a BigQuery script. It does not build a
+// Heuristic, error-tolerant analysis of a SQL script (BigQuery, PostgreSQL or
+// MySQL; see dialect.js). It does not build a
 // full AST — it walks tokens with paren depth, which survives the messy,
 // half-broken queries people paste far better than a strict parser.
 //
@@ -6,6 +7,7 @@
 // lint diagnostics and editor decorations.
 
 import { tokenize, stringInner, unquoteIdent } from './tokenizer.js';
+import { dialectOf, currentDialect, bareName } from './dialect.js';
 
 export const RESERVED = new Set(`ALL AND ANY ARRAY AS ASC ASSERT_ROWS_MODIFIED AT BETWEEN BY CASE CAST
 COLLATE CONTAINS CREATE CROSS CUBE CURRENT DEFAULT DEFINE DESC DISTINCT ELSE END ENUM ESCAPE
@@ -15,26 +17,34 @@ NATURAL NEW NO NOT NULL NULLS OF ON OR ORDER OUTER OVER PARTITION PRECEDING PROT
 RECURSIVE RESPECT RIGHT ROLLUP ROWS SELECT SET SOME STRUCT TABLESAMPLE THEN TO TREAT TRUE
 UNBOUNDED UNION UNNEST USING WHEN WHERE WINDOW WITH WITHIN`.split(/\s+/));
 
-const JOIN_WORDS = new Set(['JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'OUTER']);
+const JOIN_WORDS = new Set(['JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'OUTER', 'STRAIGHT_JOIN']);
 const FROM_END = new Set(['WHERE', 'GROUP', 'HAVING', 'QUALIFY', 'WINDOW', 'ORDER', 'LIMIT',
   'UNION', 'INTERSECT', 'EXCEPT', 'SELECT']);
 const COMPARE = new Set(['=', '!=', '<>', '<', '>', '<=', '>=']);
 const TYPED_LITERAL = new Set(['DATE', 'DATETIME', 'TIMESTAMP', 'TIME', 'NUMERIC', 'BIGNUMERIC', 'JSON']);
 
 const cache = new WeakMap();
+const reservedSets = new Map();
+const reservedFor = (D) => {
+  if (!reservedSets.has(D.id)) reservedSets.set(D.id, new Set([...RESERVED, ...D.reserved]));
+  return reservedSets.get(D.id);
+};
 
-// Memoised per CodeMirror Text instance (or any object with toString()).
-export function analyzeDoc(doc) {
+// Memoised per CodeMirror Text instance (or any object with toString()) and dialect.
+export function analyzeDoc(doc, dialect = currentDialect()) {
   let r = cache.get(doc);
-  if (!r) {
-    r = analyze(doc.toString());
+  if (!r || r.dialect !== dialect) {
+    r = analyze(doc.toString(), dialect);
     cache.set(doc, r);
   }
   return r;
 }
 
-export function analyze(src) {
-  const all = tokenize(src);
+export function analyze(src, dialect) {
+  const D = dialectOf(dialect);
+  const BQ = D.id === 'bigquery';
+  const RES = reservedFor(D);
+  const all = tokenize(src, D.id);
   const T = all.filter((t) => t.t !== 'ws' && t.t !== 'comment');
   const N = T.length;
   const diags = [];
@@ -85,7 +95,7 @@ export function analyze(src) {
     const one = s.replace(/\s+/g, ' ').trim();
     return one.length > max ? one.slice(0, max - 1) + '…' : one;
   };
-  const isName = (i) => i < N && (T[i].t === 'qident' || (T[i].t === 'ident' && !RESERVED.has(T[i].u)));
+  const isName = (i) => i < N && (T[i].t === 'qident' || (T[i].t === 'ident' && !RES.has(T[i].u)));
 
   function isSubqueryStart(i) {
     while (i < N && txt(i) === '(' && T[i].t === 'punct') i++;
@@ -108,7 +118,8 @@ export function analyze(src) {
           chunk += '-' + T[j + 1].s;
           j += 2;
         }
-        parts.push(...chunk.split('.'));
+        // `proj.ds.t` is one quoted path; a dot inside "…" is part of the name
+        parts.push(...(t.s[0] === '"' ? [chunk] : chunk.split('.')));
         prevEnd = j - 1;
         k = j;
         if (txt(k) === '.' && k + 1 < N && (T[k + 1].t === 'ident' || T[k + 1].t === 'qident')) {
@@ -134,6 +145,11 @@ export function analyze(src) {
   // Expression operand ending at token j: a path, or a function call f(...)
   function operandBefore(j) {
     if (j < 0) return null;
+    // Postgres cast: expr::type
+    if (j >= 2 && T[j].t === 'ident' && txt(j - 1) === '::') {
+      const o = operandBefore(j - 2);
+      return o ? { i: o.i, j } : null;
+    }
     if (txt(j) === ')' && match[j] >= 0) {
       let i = match[j];
       const p = pathStartBefore(i - 1);
@@ -224,7 +240,7 @@ export function analyze(src) {
     let natural = false;
     while (j < N && depth[j] === sd && T[j].t === 'ident' && JOIN_WORDS.has(T[j].u)) {
       const w = T[j].u;
-      if (w === 'JOIN') {
+      if (w === 'JOIN' || w === 'STRAIGHT_JOIN') {
         return { type: type || 'INNER', end: j + 1, natural, explicit: !!type };
       }
       if (w === 'NATURAL') natural = true;
@@ -318,6 +334,8 @@ export function analyze(src) {
     let joinTok = k - 1;
     let natural = false;
     while (k < b) {
+      // Postgres: JOIN LATERAL (subquery), FROM ONLY parent_table
+      if ((is(k, 'LATERAL') || is(k, 'ONLY')) && T[k + 1] && (txt(k + 1) === '(' || T[k + 1].t === 'ident' || T[k + 1].t === 'qident')) k++;
       const t = T[k];
       if (!t) break;
       const item = { joinType, alias: null, nodeId: null, name: null, kind: 'table', keys: [], onText: null, natural, from: T[joinTok]?.a ?? t.a };
@@ -345,7 +363,7 @@ export function analyze(src) {
         item.name = squash(slice(k, close), 40);
         item.kind = 'unnest';
         k = close + 1;
-      } else if (t.s === '[') {
+      } else if (t.s === '[' && BQ) {
         let j = k;
         while (j < b && txt(j) !== ']') j++;
         diags.push({ from: t.a, to: T[Math.min(j, N - 1)].b, severity: 'error',
@@ -387,7 +405,7 @@ export function analyze(src) {
       if (is(k, 'FOR') && is(k + 1, 'SYSTEM_TIME')) {
         k += 2;
         if (is(k, 'AS') && is(k + 1, 'OF')) k += 2;
-        while (k < b && depth[k] >= sd && !(depth[k] === sd && (txt(k) === ',' || is(k, 'AS') || (T[k].t === 'ident' && (RESERVED.has(T[k].u) && !['INTERVAL', 'CURRENT'].includes(T[k].u)))))) {
+        while (k < b && depth[k] >= sd && !(depth[k] === sd && (txt(k) === ',' || is(k, 'AS') || (T[k].t === 'ident' && (RES.has(T[k].u) && !['INTERVAL', 'CURRENT'].includes(T[k].u)))))) {
           if (txt(k) === '(' && match[k] >= 0) k = match[k];
           k++;
         }
@@ -423,7 +441,7 @@ export function analyze(src) {
         }
         marks.push({ from: aliasTok.a, to: aliasTok.b, cls: 'cm-lens-alias' });
       }
-      const aliasKey = (item.alias || (item.name || '').split('.').pop().replace(/`/g, '')).toLowerCase();
+      const aliasKey = (item.alias || bareName((item.name || '').split('.').pop())).toLowerCase();
       if (item.alias && aliases.has(aliasKey)) {
         diags.push({ from: aliasTok.a, to: aliasTok.b, severity: 'error', message: `Alias "${item.alias}" is used twice in the same FROM clause` });
       }
@@ -580,7 +598,10 @@ export function analyze(src) {
     'STRING_AGG', 'LOGICAL_AND', 'LOGICAL_OR', 'APPROX_COUNT_DISTINCT', 'APPROX_QUANTILES', 'APPROX_TOP_COUNT',
     'APPROX_TOP_SUM', 'HLL_COUNT', 'STDDEV', 'STDDEV_POP', 'STDDEV_SAMP', 'VARIANCE', 'VAR_POP', 'VAR_SAMP',
     'CORR', 'COVAR_POP', 'COVAR_SAMP', 'BIT_AND', 'BIT_OR', 'BIT_XOR', 'MAX_BY', 'MIN_BY', 'ARRAY_CONCAT_AGG',
-    'PERCENTILE_CONT', 'PERCENTILE_DISC']);
+    'PERCENTILE_CONT', 'PERCENTILE_DISC',
+    // Postgres / MySQL
+    'BOOL_AND', 'BOOL_OR', 'EVERY', 'JSON_AGG', 'JSONB_AGG', 'JSON_OBJECT_AGG', 'JSONB_OBJECT_AGG', 'MODE',
+    'GROUP_CONCAT', 'JSON_ARRAYAGG', 'JSON_OBJECTAGG', 'STD']);
   const TRIVIAL = /^(1\s*=\s*1|TRUE)$/i;
 
   function selectItemAlias(a, b) {
@@ -588,7 +609,7 @@ export function analyze(src) {
       if (is(i - 1, 'AS') && depth[i] === depth[a]) return unquoteIdent(T[i].s);
     }
     const last = T[b - 1];
-    if (b - 1 > a && (last.t === 'ident' || last.t === 'qident') && txt(b - 2) !== '.' && !RESERVED.has(last.u)) {
+    if (b - 1 > a && (last.t === 'ident' || last.t === 'qident') && txt(b - 2) !== '.' && !RES.has(last.u)) {
       return unquoteIdent(last.s);
     }
     // bare column: a.b.col -> col
@@ -681,7 +702,15 @@ export function analyze(src) {
       if (c.kw === 'SETOP') { sh.branches++; return; }
       if (c.kw === 'SELECT') {
         let j = body;
-        if (is(j, 'DISTINCT')) { sh.distinct = true; j++; }
+        if (is(j, 'DISTINCT')) {
+          sh.distinct = true;
+          j++;
+          // Postgres DISTINCT ON (keys): one row per key, the first in ORDER BY order
+          if (is(j, 'ON') && txt(j + 1) === '(' && match[j + 1] > j) {
+            if (c.branch === 0) sh.distinctOn = keyText(j + 2, match[j + 1], 60);
+            j = match[j + 1] + 1;
+          }
+        }
         if (is(j, 'ALL')) j++;
         if (is(j, 'AS') && (is(j + 1, 'STRUCT') || is(j + 1, 'VALUE'))) j += 2;
         const items = splitTop(j, end, sd, ',').map(([x, y]) => ({ x, y, alias: selectItemAlias(x, y) }));
@@ -763,7 +792,7 @@ export function analyze(src) {
   function groupKeyColumn(x, y, items) {
     if (!items) return null;
     if (y === x + 1 && T[x].t === 'number') return items[Number(T[x].s) - 1]?.alias || null;
-    const norm = (s) => s.replace(/[\s`]+/g, '').toLowerCase();
+    const norm = (s) => s.replace(/[\s`"]+/g, '').toLowerCase();
     const key = norm(slice(x, y - 1));
     for (const it of items) {
       if (!it.alias) continue;
@@ -778,7 +807,7 @@ export function analyze(src) {
   // A LEFT JOIN keeps rows with no match, with NULL in the joined columns. A
   // WHERE condition (or a later INNER JOIN's ON) on those columns is false for
   // NULL, so it drops exactly those rows and the LEFT JOIN acts as an INNER JOIN.
-  const itemKey = (it) => (it.alias || (it.name || '').split('.').pop().replace(/`/g, '')).toLowerCase();
+  const itemKey = (it) => (it.alias || bareName((it.name || '').split('.').pop())).toLowerCase();
   // Conditions that say what NULL should do: IS [NOT] NULL, OR, COALESCE, …
   function nullAware(x, y) {
     for (let i = x; i < y; i++) {
@@ -870,11 +899,11 @@ export function analyze(src) {
         }
         if (w === 'ORDER' && is(k + 1, 'BY')) orderTok = k;
         else if (w === 'LIMIT') hasLimit = true;
-        else if (w === 'UNION' || w === 'INTERSECT' || (w === 'EXCEPT' && txt(k + 1) !== '(')) {
+        else if (w === 'UNION' || w === 'INTERSECT' || (w === 'EXCEPT' && (txt(k + 1) !== '(' || isSubqueryStart(k + 1)))) {
           clauses.push({ kw: 'SETOP', i: k, body: k + 1, branch });
           branch++;
           const nx = up(k + 1);
-          if (nx !== 'ALL' && nx !== 'DISTINCT') {
+          if (BQ && nx !== 'ALL' && nx !== 'DISTINCT') {
             diags.push({ from: t.a, to: t.b, severity: 'error', message: `BigQuery requires ${w} ALL or ${w} DISTINCT` });
           }
           orderTok = -1;
@@ -885,7 +914,7 @@ export function analyze(src) {
     }
     if (!opts.inline && clauses.length) recordShape(owner, clauses, b, sd);
     checkOuterJoins(clauses, b, sd);
-    if (opts.nested && !opts.inline && orderTok >= 0 && !hasLimit) {
+    if (opts.nested && !opts.inline && orderTok >= 0 && !hasLimit && !shapes.get(owner)?.distinctOn) {
       diags.push({ from: T[orderTok].a, to: T[orderTok + 1].b, severity: 'info',
         message: `ORDER BY inside a ${opts.kind === 'cte' ? 'CTE' : 'subquery'} without LIMIT does not affect the final result` });
     }
@@ -907,16 +936,31 @@ export function analyze(src) {
   const resultStmts = stmts.filter(([s]) => ['SELECT', 'WITH'].includes(up(s)) || txt(s) === '(').length;
 
   const variables = [];
-  const inDeclare = new Uint8Array(N);
-  let lastDeclareEnd = -1; // char offset after the last DECLARE's semicolon
+  const inDeclare = new Uint8Array(N); // tokens of variable-defining statements
+  let lastDeclareEnd = -1; // char offset after the last leading DECLARE / SET @var statement
   let seenOther = false;
+
+  // The editable part of a variable's value [vs, ve]: a string, typed string, number or expression.
+  const valueEdit = (vs, ve) => {
+    if (vs === ve && T[vs].t === 'string') return { ...stringInner(T[vs]), kind: 'string' };
+    if (ve === vs + 1 && TYPED_LITERAL.has(up(vs)) && T[ve].t === 'string') return { ...stringInner(T[ve]), kind: 'string', wrap: T[vs].u };
+    if (vs === ve && T[vs].t === 'number') return { from: T[vs].a, to: T[vs].b, kind: 'number' };
+    return { from: T[vs].a, to: T[ve].b, kind: 'expr' };
+  };
+  const setValue = (v, vs, ve) => {
+    if (vs > ve) return;
+    v.valueText = slice(vs, ve);
+    v.edit = valueEdit(vs, ve);
+    v.value = src.slice(v.edit.from, v.edit.to);
+  };
 
   for (let si = 0; si < stmts.length; si++) {
     const [s, e] = stmts[si];
     if (s >= e) continue;
     const first = up(s);
+    const stmtEnd = T[e]?.b ?? T[e - 1].b;
 
-    if (first === 'DECLARE') {
+    if (first === 'DECLARE' && D.vars === 'declare') {
       for (let i = s; i < e; i++) inDeclare[i] = 1;
       if (seenOther) {
         diags.push({ from: T[s].a, to: T[s].b, severity: 'error', message: 'DECLARE must come before all other statements in a BigQuery script' });
@@ -934,31 +978,31 @@ export function analyze(src) {
       const typeEnd = def >= 0 ? def : e;
       const type = typeEnd > k ? slice(k, typeEnd - 1) : '';
       const v = {
+        kind: 'declare',
         names: names.map((n) => unquoteIdent(n.s)),
         nameToks: names.map((n) => ({ from: n.a, to: n.b })),
         type,
-        stmt: { from: T[s].a, to: T[e]?.b ?? T[e - 1].b },
+        stmt: { from: T[s].a, to: stmtEnd },
         refs: [],
       };
-      if (def >= 0 && def + 1 < e) {
-        const vs = def + 1;
-        const ve = e - 1;
-        v.valueText = slice(vs, ve);
-        if (vs === ve && T[vs].t === 'string') {
-          const inner = stringInner(T[vs]);
-          v.edit = { ...inner, kind: 'string' };
-        } else if (ve === vs + 1 && TYPED_LITERAL.has(up(vs)) && T[ve].t === 'string') {
-          v.edit = { ...stringInner(T[ve]), kind: 'string', wrap: T[vs].u };
-        } else if (vs === ve && T[vs].t === 'number') {
-          v.edit = { from: T[vs].a, to: T[vs].b, kind: 'number' };
-        } else {
-          v.edit = { from: T[vs].a, to: T[ve].b, kind: 'expr' };
-        }
-        v.value = src.slice(v.edit.from, v.edit.to);
-      }
+      if (def >= 0) setValue(v, def + 1, e - 1);
       variables.push(v);
       for (const nt of names) marks.push({ from: nt.a, to: nt.b, cls: 'cm-lens-var cm-lens-def' });
-      lastDeclareEnd = T[e]?.b ?? T[e - 1].b;
+      lastDeclareEnd = stmtEnd;
+      continue;
+    }
+
+    // MySQL user variables: SET @a = 1, @b := 'x';  The names keep their @.
+    if (first === 'SET' && D.vars === 'set' && T[s + 1]?.t === 'param') {
+      for (let i = s; i < e; i++) inDeclare[i] = 1;
+      for (const [x, y] of splitTop(s + 1, e, 0, ',')) {
+        if (T[x].t !== 'param' || !(txt(x + 1) === '=' || txt(x + 1) === ':=')) continue;
+        const v = { kind: 'set', names: [T[x].s], nameToks: [{ from: T[x].a, to: T[x].b }], type: '', stmt: { from: T[s].a, to: stmtEnd }, refs: [] };
+        setValue(v, x + 2, y - 1);
+        variables.push(v);
+        marks.push({ from: T[x].a, to: T[x].b, cls: 'cm-lens-var cm-lens-def' });
+      }
+      if (!seenOther) lastDeclareEnd = stmtEnd;
       continue;
     }
 
@@ -988,8 +1032,9 @@ export function analyze(src) {
       created.set(full.toLowerCase(), owner);
       if (temp) created.set(p.parts[p.parts.length - 1].toLowerCase(), owner);
       k = p.end;
-      while (k < e && !(is(k, 'AS') && depth[k] === 0)) k++;
-      k++;
+      // … AS SELECT, or MySQL's CREATE TABLE t SELECT … (no AS)
+      while (k < e && !(depth[k] === 0 && (is(k, 'AS') || is(k, 'SELECT') || (is(k, 'WITH') && txt(k + 1) !== '(')))) k++;
+      if (is(k, 'AS')) k++;
     } else if (first === 'INSERT' || first === 'MERGE' || first === 'UPDATE' || first === 'DELETE') {
       let j = s + 1;
       if (is(j, 'INTO') || is(j, 'FROM')) j++;
@@ -1022,15 +1067,18 @@ export function analyze(src) {
   }
 
   // ---- variables: references & shadowing ---------------------------------
+  // BigQuery variables are bare names; MySQL ones are @name (param tokens).
   const varByName = new Map();
   for (const v of variables) for (const n of v.names) varByName.set(n.toLowerCase(), v);
+  const varTok = D.vars === 'set' ? 'param' : 'ident';
+  const isVarDef = (t) => variables.some((v) => v.nameToks.some((nt) => nt.from === t.a));
   const qualifiedNames = new Set();
   for (let i = 1; i < N; i++) {
     if (txt(i - 1) === '.' && T[i].t === 'ident') qualifiedNames.add(T[i].s.toLowerCase());
   }
   for (let i = 0; i < N; i++) {
     const t = T[i];
-    if (t.t !== 'ident' || inDeclare[i] && variables.some((v) => v.nameToks.some((nt) => nt.from === t.a))) continue;
+    if (t.t !== varTok || inDeclare[i] && isVarDef(t)) continue;
     const v = varByName.get(t.s.toLowerCase());
     if (!v) continue;
     if (txt(i - 1) === '.' || txt(i + 1) === '.' || (txt(i + 1) === '(' && T[i + 1].a === t.b)) continue;
@@ -1041,9 +1089,9 @@ export function analyze(src) {
     v.names.forEach((name, idx) => {
       const nt = v.nameToks[idx];
       if (!v.refs.length) {
-        diags.push({ from: nt.from, to: nt.to, severity: 'warning', message: `Variable "${name}" is declared but never used` });
+        diags.push({ from: nt.from, to: nt.to, severity: 'warning', message: `Variable "${name}" is ${v.kind === 'set' ? 'set' : 'declared'} but never used` });
       }
-      if (qualifiedNames.has(name.toLowerCase())) {
+      if (BQ && qualifiedNames.has(name.toLowerCase())) {
         diags.push({ from: nt.from, to: nt.to, severity: 'warning',
           message: `A column is also named "${name}" — in BigQuery the column wins over the variable. Consider renaming (e.g. v_${name}).` });
       }
@@ -1051,19 +1099,23 @@ export function analyze(src) {
   }
 
   // ---- query parameters -------------------------------------------------
+  // @x in BigQuery, $1 / :x in Postgres, and in MySQL any @x that no SET defines.
   const paramMap = new Map();
-  for (const t of T) {
-    if (t.t !== 'param' || !t.name) continue;
-    const key = t.name.toLowerCase();
-    if (!paramMap.has(key)) paramMap.set(key, { name: t.name, refs: [] });
-    paramMap.get(key).refs.push({ from: t.a, to: t.b });
+  for (let i = 0; i < N; i++) {
+    const t = T[i];
+    if (t.t !== 'param' || !t.name || (varTok === 'param' && varByName.has(t.s.toLowerCase()))) continue;
+    const key = t.sigil + t.name.toLowerCase();
+    if (!paramMap.has(key)) paramMap.set(key, { name: t.name, sigil: t.sigil, text: t.sigil + t.name, refs: [] });
+    const p = paramMap.get(key);
+    p.refs.push({ from: t.a, to: t.b });
+    if (txt(i + 1) === ':=') p.assigned = true; // MySQL: SELECT @rn := @rn + 1
     marks.push({ from: t.a, to: t.b, cls: 'cm-lens-var cm-lens-param' });
   }
   const params = [...paramMap.values()];
   for (const p of params) {
+    if (p.assigned) continue;
     const r = p.refs[0];
-    diags.push({ from: r.from, to: r.to, severity: 'info',
-      message: `@${p.name} is a query parameter — set it in BigQuery query settings, or turn it into a DECLARE variable from the side panel` });
+    diags.push({ from: r.from, to: r.to, severity: 'info', message: D.paramLint(p.text) });
   }
 
   // ---- hardcoded literal filters ----------------------------------------
@@ -1094,7 +1146,7 @@ export function analyze(src) {
     } else if (t.t === 'string' && !(i > 0 && T[i - 1].t === 'ident' && TYPED_LITERAL.has(T[i - 1].u))) {
       lit = { i, j: i, kind: 'string', strTok: t };
     } else if (t.t === 'number') {
-      const neg = i > 0 && txt(i - 1) === '-' && T[i - 1].b === t.a && (i < 2 || T[i - 2].t === 'op' || ['(', ','].includes(txt(i - 2)) || RESERVED.has(up(i - 2)));
+      const neg = i > 0 && txt(i - 1) === '-' && T[i - 1].b === t.a && (i < 2 || T[i - 2].t === 'op' || ['(', ','].includes(txt(i - 2)) || RES.has(up(i - 2)));
       lit = { i: neg ? i - 1 : i, j: i, kind: 'number' };
     }
     if (!lit) continue;
@@ -1128,6 +1180,8 @@ export function analyze(src) {
       if (!inParens.has(parent[lit.i])) inParens.set(parent[lit.i], label);
     } else if (up(pi) === 'INTERVAL' && lit.kind === 'number') {
       label = `INTERVAL · ${up(nj) || ''}`.trim();
+    } else if (up(pi) === 'INTERVAL' && lit.kind === 'string') {
+      label = 'INTERVAL';
     } else if (nj < N && T[nj].t === 'op' && COMPARE.has(next)) {
       const o = operandAfter(nj + 1);
       label = o ? `${next} ${squash(slice(o.i, o.j), 36)}` : next;
@@ -1154,7 +1208,7 @@ export function analyze(src) {
   // IN lists made only of literals: IN ('SG', 'MY', 'PH'). These can become a
   // single ARRAY variable used as IN UNNEST(v).
   const inLists = [];
-  for (const [p, label] of inParens) {
+  for (const [p, label] of D.arrays ? inParens : []) {
     const close = match[p];
     if (close < 0) continue;
     const items = [];
@@ -1213,7 +1267,7 @@ export function analyze(src) {
     if (is(i, 'SELECT')) {
       let j = i + 1;
       while (is(j, 'DISTINCT') || is(j, 'ALL') || (is(j, 'AS') && (is(j + 1, 'STRUCT') || is(j + 1, 'VALUE')))) j += is(j, 'AS') ? 2 : 1;
-      if (txt(j) === '*') {
+      if (BQ && txt(j) === '*') {
         diags.push({ from: T[j].a, to: T[j].b, severity: 'info', message: 'SELECT * reads every column — BigQuery bills by columns scanned' });
       }
     }
@@ -1268,18 +1322,18 @@ export function analyze(src) {
   const grainOf = (n) => {
     const sh = n?.shape;
     if (!sh || !['cte', 'subquery'].includes(n.kind)) return null;
-    if (sh.dedupe?.where === 'QUALIFY') {
-      const per = sh.dedupe.per.split(',').map((s) => s.trim().split('.').pop().replace(/`/g, ''));
+    if (sh.dedupe?.where === 'QUALIFY' || sh.dedupe?.where === 'DISTINCT ON') {
+      const per = sh.dedupe.per.split(',').map((s) => s.trim().split('.').pop().replace(/[`"]/g, ''));
       return per.every((c) => /^\w+$/.test(c)) ? per : null;
     }
     return sh.grain || null;
   };
   // Columns of `alias` that a join's equality keys use (`alias.col = other.col`, or USING).
-  const pathAlias = (p) => { const x = p.replace(/`/g, '').split('.'); return x.length === 2 && /^\w+$/.test(x[1]) ? [x[0].toLowerCase(), x[1]] : null; };
+  const pathAlias = (p) => { const x = p.replace(/[`"]/g, '').split('.'); return x.length === 2 && /^\w+$/.test(x[1]) ? [x[0].toLowerCase(), x[1]] : null; };
   function sideCols(it, alias, other) {
     const cols = [];
     for (const k of it.keys || []) {
-      if (!k.left.includes('.') && !k.right.includes('.')) { cols.push(k.left.replace(/`/g, '')); continue; } // USING
+      if (!k.left.includes('.') && !k.right.includes('.')) { cols.push(k.left.replace(/[`"]/g, '')); continue; } // USING
       const l = pathAlias(k.left);
       const r = pathAlias(k.right);
       if (!l || !r) continue;
@@ -1308,7 +1362,7 @@ export function analyze(src) {
       const earlier = items.slice(0, j).map(itemKey).filter(Boolean);
       const using = (it.keys || []).length && it.keys.every((k) => !k.left.includes('.'));
       // This item's key: if it repeats, every earlier row comes back once per copy.
-      const own = using ? it.keys.map((k) => k.left.replace(/`/g, '')) : [...new Set(earlier.flatMap((p) => sideCols(it, me, p)))];
+      const own = using ? it.keys.map((k) => k.left.replace(/[`"]/g, '')) : [...new Set(earlier.flatMap((p) => sideCols(it, me, p)))];
       if (me && own.length) n.joinSides.push({ item: it, nodeId: it.nodeId, alias: me, cols: own, repeats: earlier });
       // The earlier side's key: if it repeats, each row of this item comes back once per copy.
       const others = using ? (j === 1 ? [earlier[0]] : []) : earlier;
@@ -1454,9 +1508,36 @@ export function analyze(src) {
     }
     const today = Math.floor(Date.now() / DAY);
     const UNIT_DAYS = { DAY: 1, WEEK: 7, ISOWEEK: 7, MONTH: 30, QUARTER: 91, YEAR: 365 };
+    const TODAY = /^(CURRENT_(DATE|TIMESTAMP|DATETIME)|CURDATE|NOW|SYSDATE|UTC_DATE|UTC_TIMESTAMP|LOCALTIMESTAMP|TRANSACTION_TIMESTAMP|STATEMENT_TIMESTAMP)$/;
 
-    // End index (inclusive) of a value expression starting at k, or -1.
+    // Days in an interval starting at token x: INTERVAL 7 DAY (BigQuery, MySQL),
+    // INTERVAL '7 days' / INTERVAL '7' DAY (Postgres), or a bare number of days
+    // (Postgres date - 7). Returns { days, end } or null.
+    const intervalAt = (x) => {
+      if (T[x]?.t === 'number') return { days: Number(T[x].s), end: x };
+      if (!is(x, 'INTERVAL')) return null;
+      const v = T[x + 1];
+      if (v?.t === 'number' && UNIT_DAYS[up(x + 2)] !== undefined) return { days: UNIT_DAYS[up(x + 2)] * Number(v.s), end: x + 2 };
+      if (v?.t !== 'string') return null;
+      const m = /^\s*(-?\d+)\s*([a-z]*)\s*$/i.exec(src.slice(stringInner(v).from, stringInner(v).to));
+      if (!m) return null;
+      const named = m[2].toUpperCase().replace(/S$/, '');
+      if (named) return UNIT_DAYS[named] === undefined ? null : { days: UNIT_DAYS[named] * Number(m[1]), end: x + 1 };
+      return UNIT_DAYS[up(x + 2)] === undefined ? null : { days: UNIT_DAYS[up(x + 2)] * Number(m[1]), end: x + 2 };
+    };
+
+    // End index (inclusive) of a value expression starting at k, or -1. Takes in a
+    // trailing `+ / - INTERVAL …` and a Postgres `::type` cast.
     const valueEnd = (k) => {
+      let e = baseEnd(k);
+      while (e >= 0) {
+        if (txt(e + 1) === '::' && T[e + 2]?.t === 'ident') { e += 2; continue; }
+        if ((txt(e + 1) === '+' || txt(e + 1) === '-') && intervalAt(e + 2)) { e = intervalAt(e + 2).end; continue; }
+        break;
+      }
+      return e;
+    };
+    const baseEnd = (k) => {
       if (k >= N) return -1;
       const t = T[k];
       if (t.t === 'string' || t.t === 'number' || t.t === 'param') return k;
@@ -1473,8 +1554,21 @@ export function analyze(src) {
 
     // Resolve tokens [i, j] to a calendar day, or null.
     const resolve = (i, j, hop = 0) => {
-      if (i > j || hop > 4) return null;
+      if (i > j || hop > 6) return null;
       const t = T[i];
+      // <date> + / - <interval>: the last top-level + or - whose right side is an interval
+      for (let q = j - 1; q > i; q--) {
+        if (depth[q] !== depth[i] || !(txt(q) === '+' || txt(q) === '-') || T[q].t !== 'op') continue;
+        const iv = intervalAt(q + 1);
+        if (!iv || iv.end !== j) continue;
+        const base = resolve(i, q - 1, hop + 1);
+        if (!base) return null;
+        return { ...base, day: base.day + iv.days * (txt(q) === '-' ? -1 : 1), src: { kind: 'expr', name: squash(slice(i, j), 50), base: base.src } };
+      }
+      // Postgres cast: '2024-01-01'::date
+      if (j >= i + 2 && txt(j - 1) === '::' && T[j].t === 'ident') return resolve(i, j - 2, hop + 1);
+      if (i === j && t.t === 'ident' && TODAY.test(t.u)) return { day: today, fmt: 'iso', relative: true, src: { kind: 'expr', name: t.u } };
+      if (i === j && t.t === 'param' && D.vars === 'set') return varDate.get(t.s.toLowerCase()) || null;
       if (i === j && t.t === 'string') {
         const d = parseDay(src.slice(stringInner(t).from, stringInner(t).to));
         return d && { ...d, src: { kind: 'literal', edit: { ...stringInner(t), kind: 'string' } } };
@@ -1494,19 +1588,19 @@ export function analyze(src) {
       if (txt(p.end) !== '(' || match[p.end] !== j) return null;
       const fn = p.parts[p.parts.length - 1].toUpperCase();
       const args = splitTop(p.end + 1, j, depth[p.end] + 1, ',');
-      if (/^CURRENT_(DATE|TIMESTAMP|DATETIME)$/.test(fn)) return { day: today, fmt: 'iso', relative: true, src: { kind: 'expr', name: fn + '()' } };
+      if (TODAY.test(fn)) return { day: today, fmt: 'iso', relative: true, src: { kind: 'expr', name: fn + '()' } };
       if (['DATE', 'TIMESTAMP', 'DATETIME', 'SAFE_CAST', 'CAST'].includes(fn) && args.length) {
         let [x, y] = args[0];
         for (let q = x; q < y; q++) if (is(q, 'AS') && depth[q] === depth[x]) { y = q; break; }
         return resolve(x, y - 1, hop + 1);
       }
       if (/^PARSE_(DATE|TIMESTAMP|DATETIME)$/.test(fn) && args.length === 2) return resolve(args[1][0], args[1][1] - 1, hop + 1);
-      if (/^(DATE|TIMESTAMP|DATETIME)_(ADD|SUB)$/.test(fn) && args.length === 2) {
+      if (/^(DATE|TIMESTAMP|DATETIME|ADD|SUB)_?(ADD|SUB|DATE)$/.test(fn) && args.length === 2) {
+        // DATE_SUB(d, INTERVAL 7 DAY), MySQL ADDDATE / SUBDATE(d, INTERVAL … | days)
         const base = resolve(args[0][0], args[0][1] - 1, hop + 1);
-        const [x, y] = args[1];
-        if (!base || !is(x, 'INTERVAL') || T[x + 1]?.t !== 'number') return null;
-        const unit = up(y - 1);
-        const days = (UNIT_DAYS[unit] ?? 0) * Number(T[x + 1].s) * (fn.endsWith('_SUB') ? -1 : 1);
+        const iv = intervalAt(args[1][0]);
+        if (!base || !iv || iv.end !== args[1][1] - 1) return null;
+        const days = iv.days * (/SUB/.test(fn) ? -1 : 1);
         return { ...base, day: base.day + days, src: { kind: 'expr', name: squash(slice(i, j), 50), base: base.src } };
       }
       return null;
@@ -1514,7 +1608,7 @@ export function analyze(src) {
 
     const colOf = (i, j) => {
       for (let q = i; q <= j; q++) {
-        if ((T[q].t === 'ident' || T[q].t === 'qident') && !RESERVED.has(T[q].u) && txt(q + 1) !== '(') {
+        if ((T[q].t === 'ident' || T[q].t === 'qident') && !RES.has(T[q].u) && txt(q + 1) !== '(') {
           const p = readPath(q);
           if (p) return p.parts[p.parts.length - 1];
         }
@@ -1647,6 +1741,7 @@ export function analyze(src) {
   marks.sort((x, y) => x.from - y.from || x.to - y.to);
 
   return {
+    dialect: D.id,
     src,
     tokens: T,
     match,
@@ -1661,7 +1756,7 @@ export function analyze(src) {
     statements: stmts.filter(([s, e]) => s < e).map(([s, e]) => ({
       from: T[s].a,
       to: (T[e] ?? T[e - 1]).b,
-      kind: up(s) === 'DECLARE' ? 'declare' : up(s) === 'SET' ? 'set'
+      kind: up(s) === 'DECLARE' && BQ ? 'declare' : up(s) === 'SET' ? 'set'
         : up(s) === 'CREATE' && T.slice(s + 1, Math.min(e, s + 6)).some((t) => t.u === 'FUNCTION') ? 'function' : 'other',
     })),
     graph: { nodes: nodeList, edges: edgeList },
@@ -1693,6 +1788,8 @@ function detectDedupe(nodes, edges) {
   for (const n of nodes) {
     const sh = n.shape;
     if (!sh) continue;
+    // Postgres SELECT DISTINCT ON (k) … ORDER BY k, t DESC
+    if (sh.distinctOn) { mark(n, { partition: sh.distinctOn, order: sh.orderBy || '' }, 'DISTINCT ON'); continue; }
     // QUALIFY ROW_NUMBER() OVER (...) = 1  or  QUALIFY rn = 1
     for (const q of sh.qualify) {
       const w = sh.windows.find((w) => RANKERS.has(w.fn) && w.alias && isFirst(q, w.alias));
@@ -1707,7 +1804,7 @@ function detectDedupe(nodes, edges) {
       const consumer = byId.get(e.to);
       for (const w of ranks) {
         // A join without AS is referred to by its own name (`LEFT JOIN tx ON … tx.rn = 1`).
-        const aliasOf = (j) => j.alias || (j.name || '').split('.').pop().replace(/`/g, '');
+        const aliasOf = (j) => j.alias || (j.name || '').split('.').pop().replace(/[`"]/g, '');
         const onHit = e.joins.find((j) => j.onText && aliasOf(j) && isFirst(j.onText, `${aliasOf(j)}\\.${w.alias}`));
         const whereHit = consumer?.shape?.filters.some((f) =>
           e.joins.some((j) => aliasOf(j) && isFirst(f, `${aliasOf(j)}\\.${w.alias}`)) || (n.out.length === 1 && isFirst(f, w.alias)));

@@ -19,13 +19,20 @@ function fromBase64Url(s) {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
-/** '#sql=…' for `text`. */
-export async function encodeShare(text) {
-  return PREFIX + toBase64Url(await pipe(new TextEncoder().encode(text), new CompressionStream('deflate-raw')));
+/** '#sql=…&dialect=…' for `text`. */
+export async function encodeShare(text, dialect) {
+  return PREFIX + toBase64Url(await pipe(new TextEncoder().encode(text), new CompressionStream('deflate-raw'))) +
+    (dialect ? '&dialect=' + encodeURIComponent(dialect) : '');
 }
 
-/** The SQL in a '#sql=…' hash, null when there is none, or throws when it is damaged. */
+/**
+ * { text, dialect } from a '#sql=…' hash, null when there is none, or throws when
+ * it is damaged. Links made before dialects existed are BigQuery.
+ */
 export async function decodeShare(hash) {
   if (!hash.startsWith(PREFIX)) return null;
-  return new TextDecoder().decode(await pipe(fromBase64Url(hash.slice(PREFIX.length)), new DecompressionStream('deflate-raw')));
+  const [data, ...rest] = hash.slice(PREFIX.length).split('&');
+  const dialect = new URLSearchParams(rest.join('&')).get('dialect') || 'bigquery';
+  const text = new TextDecoder().decode(await pipe(fromBase64Url(data), new DecompressionStream('deflate-raw')));
+  return { text, dialect };
 }

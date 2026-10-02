@@ -3,10 +3,11 @@
 // references, rename, hover and "preview this CTE" are all built on symbolAt().
 
 import { RESERVED } from './analyzer.js';
+import { dialectOf } from './dialect.js';
 
 const same = (r, t) => r.from === t.a && r.to === t.b;
 const within = (r, t) => r.from <= t.a && t.b <= r.to;
-const keyOf = (s) => s.replace(/`/g, '').toLowerCase();
+const keyOf = (s) => s.replace(/[`"]/g, '').toLowerCase();
 
 // The identifier / parameter token at `pos` (either edge counts, so `u|.id` finds `u`).
 function tokenAt(T, pos) {
@@ -39,7 +40,7 @@ export function resolveQualifier(a, pos, key) {
   for (const step of stepsAround(a, pos)) {
     for (const block of step.blocks || []) {
       for (const item of block) {
-        const k = (item.alias || (item.name || '').replace(/`/g, '').split('.').pop() || '').toLowerCase();
+        const k = (item.alias || (item.name || '').replace(/[`"]/g, '').split('.').pop() || '').toLowerCase();
         if (k === key) return { item, step };
       }
     }
@@ -88,8 +89,9 @@ export function symbolAt(a, pos) {
   const t = T[i];
 
   if (t.t === 'param') {
-    const p = a.params.find((p) => p.name.toLowerCase() === (t.name || '').toLowerCase());
-    return p ? { kind: 'param', name: p.name, def: null, refs: p.refs, param: p } : null;
+    const p = a.params.find((p) => p.sigil === t.sigil && p.name.toLowerCase() === (t.name || '').toLowerCase());
+    if (p) return { kind: 'param', name: p.name, def: null, refs: p.refs, param: p };
+    // otherwise a MySQL @variable, below
   }
 
   for (const n of a.graph.nodes) {
@@ -136,27 +138,35 @@ export function occurrences(sym) {
 
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const RENAMABLE = new Set(['cte', 'alias', 'variable', 'param', 'cteParam']);
+/** Whether F2 can rename it (a positional $1 has no name to change). */
+export const canRename = (sym) => RENAMABLE.has(sym.kind) && !(sym.kind === 'param' && sym.param.sigil === '$');
 
 /** Edits that rename `sym` to `name`, or { error }. */
 export function renameEdits(a, sym, name) {
-  if (!RENAMABLE.has(sym.kind)) return { error: 'Only CTEs, aliases, variables and parameters can be renamed' };
-  name = name.trim().replace(/^@/, '');
+  if (!canRename(sym)) return { error: 'Only CTEs, aliases, variables and named parameters can be renamed' };
+  // A MySQL variable keeps its @; a parameter keeps its @ or :.
+  const sigil = sym.kind === 'param' ? sym.param.sigil : sym.kind === 'variable' && sym.name.startsWith('@') ? '@' : '';
+  name = name.trim().replace(/^[@:]/, '');
   if (!IDENT.test(name)) return { error: 'Use letters, digits and _ (not starting with a digit)' };
+  name = sigil + name;
   const key = name.toLowerCase();
-  if (key === sym.name.toLowerCase() && name === sym.name) return { changes: [] };
-  if (sym.kind !== 'param' && RESERVED.has(name.toUpperCase())) return { error: `${name.toUpperCase()} is a reserved word` };
-  if (key !== sym.name.toLowerCase()) {
+  const cur = sym.kind === 'param' ? sym.param.text : sym.name;
+  if (key === cur.toLowerCase() && name === cur) return { changes: [] };
+  const reserved = (w) => RESERVED.has(w) || dialectOf(a.dialect).reserved.has(w);
+  if (!sigil && reserved(name.toUpperCase())) return { error: `${name.toUpperCase()} is a reserved word` };
+  if (key !== cur.toLowerCase()) {
     const clash =
       sym.kind === 'cte' ? a.graph.nodes.some((n) => n.kind === 'cte' && n.label.toLowerCase() === key)
-      : sym.kind === 'variable' ? a.variables.some((v) => v.names.some((n) => n.toLowerCase() === key))
-      : sym.kind === 'param' ? a.params.some((p) => p.name.toLowerCase() === key)
+      : sym.kind === 'variable' ? a.variables.some((v) => v.names.some((n) => n.toLowerCase() === key)) || a.params.some((p) => p.text.toLowerCase() === key)
+      : sym.kind === 'param' ? a.params.some((p) => p.text.toLowerCase() === key)
       : sym.kind === 'cteParam' ? a.cteParams.some((p) => p.name.toLowerCase() === key)
       : sym.step.blocks.some((b) => b.some((it) => (it.alias || '').toLowerCase() === key));
     if (clash) return { error: `"${name}" is already used${sym.kind === 'alias' ? ' in this FROM' : ''}` };
   }
   const changes = occurrences(sym).map((r) => {
     const old = a.src.slice(r.from, r.to);
-    const insert = sym.kind === 'param' ? '@' + name : old.startsWith('`') ? '`' + name + '`' : name;
+    const q = old[0] === '`' || old[0] === '"' ? old[0] : '';
+    const insert = sym.kind === 'param' ? name : q + name + q;
     return { from: r.from, to: r.to, insert };
   });
   return { changes };

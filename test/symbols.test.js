@@ -117,7 +117,11 @@ test('share links round-trip unicode and long queries', async () => {
   const hash = await encodeShare(sql);
   assert.match(hash, /^#sql=[A-Za-z0-9_-]+$/);
   assert.ok(hash.length < sql.length / 4);
-  assert.equal(await decodeShare(hash), sql);
+  // Links without a dialect (made before there were others) are BigQuery.
+  assert.deepEqual(await decodeShare(hash), { text: sql, dialect: 'bigquery' });
+  const pg = await encodeShare(sql, 'postgres');
+  assert.match(pg, /&dialect=postgres$/);
+  assert.deepEqual(await decodeShare(pg), { text: sql, dialect: 'postgres' });
   assert.equal(await decodeShare('#other'), null);
   await assert.rejects(decodeShare('#sql=AAAA'));
 });

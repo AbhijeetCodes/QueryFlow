@@ -1,12 +1,12 @@
 # QueryFlow
 
-A lightweight BigQuery SQL **editor** that runs entirely in the browser and is meant to be
+A lightweight SQL **editor** for BigQuery, PostgreSQL and MySQL that runs entirely in the browser and is meant to be
 hosted for free as a static site. See README.md for features, layout and hosting options.
 
 ## Ground rules
 
 - **Editor only, no server.** Everything works from the SQL text in the browser: no backend,
-  no API calls, no BigQuery connection, no login, no AI features. `npm run build` must stay a
+  no API calls, no database connection, no login, no AI features. `npm run build` must stay a
   plain static `dist/` that any static host can serve.
 - **It will be public.** Keep company-internal names, datasets, endpoints and URLs out of
   code, sample queries and docs.
@@ -26,9 +26,13 @@ npm run build    # static site in dist/ (relative paths via base: './')
 
 ## Code map
 
-- `src/tokenizer.js`: tolerant GoogleSQL tokenizer (never throws)
-- `src/analyzer.js`: `analyzeDoc(doc)` (cached per doc) gives the CTE/join graph, variables,
+- `src/dialect.js`: the three dialects (`bigquery`, `postgres`, `mysql`) and the editor's current
+  one. Dialect differences belong here as data (quoting, params, variables, reserved words, lint
+  text) rather than as `if (dialect)` scattered through the code.
+- `src/tokenizer.js`: tolerant tokenizer, `tokenize(src, dialect)` (never throws)
+- `src/analyzer.js`: `analyzeDoc(doc)` (cached per doc and dialect) gives the CTE/join graph, variables,
   params, filter values, date windows and lint diagnostics. Everything else reads from it.
+  `analyze(src, dialect)` is the uncached form tests use; `analysis.dialect` says which one it read.
 - `src/shape.js`: per-step summary (filters, aggregates, dedupe, windows)
 - `src/scope.js`: alias → FROM item at a position; CTE columns for autocomplete
 - `src/symbols.js`: `symbolAt(analysis, pos)` (CTE / table / alias / variable / param and its uses),

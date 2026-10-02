@@ -4,7 +4,8 @@
 
 import { EditorView, hoverTooltip, keymap, ViewPlugin } from '@codemirror/view';
 import { analyzeDoc, joinLabel } from './analyzer.js';
-import { symbolAt, occurrences, renameEdits, cteAt, RENAMABLE } from './symbols.js';
+import { symbolAt, occurrences, renameEdits, cteAt, canRename } from './symbols.js';
+import { dialectOf } from './dialect.js';
 import { shapeChips, clip } from './shape.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -12,6 +13,7 @@ const isMac = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform || '');
 const MOD = isMac ? '⌘' : 'Ctrl+';
 const times = (n) => (n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`);
 const KIND = { cte: 'CTE', table: 'table', alias: 'alias', variable: 'variable', param: 'parameter', cteParam: 'constant' };
+const shown = (sym) => (sym.kind === 'param' ? sym.param.text : sym.name);
 
 function lineOf(view, pos) { return view.state.doc.lineAt(pos).number; }
 
@@ -25,14 +27,14 @@ export function symbolFeatures({ setFocusRanges, toast = () => {}, onPreview = (
     selection: { anchor: r.from, head: r.to },
     effects: [EditorView.scrollIntoView(r.from, { y: 'center' }), ...(all ? [setFocusRanges.of(all)] : [])],
   });
-  const nothing = () => { toast('Put the cursor on a CTE, table, alias, variable or @parameter'); return true; };
+  const nothing = () => { toast('Put the cursor on a CTE, table, alias, variable or parameter'); return true; };
 
   function goToDefinition(view) {
-    const { pos, sym } = here(view);
+    const { a, pos, sym } = here(view);
     if (!sym) return nothing();
     if (!sym.def) {
       toast(sym.kind === 'param'
-        ? `@${sym.name} is a query parameter: its value is set in BigQuery, not in the SQL`
+        ? `${sym.param.text} is a query parameter: ${dialectOf(a.dialect).paramNote}`
         : `${sym.name} is a table outside this query`);
       return findReferences(view);
     }
@@ -61,7 +63,10 @@ export function symbolFeatures({ setFocusRanges, toast = () => {}, onPreview = (
   function rename(view) {
     const { pos, sym } = here(view);
     if (!sym) return nothing();
-    if (!RENAMABLE.has(sym.kind)) { toast(`${sym.name} is a table outside this query, so it can't be renamed here`, 'error'); return true; }
+    if (!canRename(sym)) {
+      toast(sym.kind === 'param' ? `${sym.param.text} is a positional parameter, so it has no name to change` : `${sym.name} is a table outside this query, so it can't be renamed here`, 'error');
+      return true;
+    }
     view.plugin(renameBox)?.open(sym, pos);
     return true;
   }
@@ -103,7 +108,7 @@ export function symbolFeatures({ setFocusRanges, toast = () => {}, onPreview = (
       this.dom.style.left = Math.max(4, c.left - box.left - 6) + 'px';
       this.dom.style.top = c.bottom - box.top + 4 + 'px';
       this.dom.hidden = false;
-      this.input.value = sym.name;
+      this.input.value = shown(sym);
       this.check();
       this.input.focus();
       this.input.select();
@@ -119,11 +124,11 @@ export function symbolFeatures({ setFocusRanges, toast = () => {}, onPreview = (
       if (this.view.state.doc !== this.doc) { this.close(true); toast('The query changed while renaming. Press F2 again.', 'error'); return; }
       const r = this.check();
       if (r.error) return;
-      const old = this.sym.name;
+      const old = shown(this.sym);
       this.close(true);
       if (!r.changes.length) return;
       this.view.dispatch({ changes: r.changes, userEvent: 'rename' });
-      toast(`Renamed ${old} → ${this.input.value.trim().replace(/^@/, '')} in ${r.changes.length} place${r.changes.length === 1 ? '' : 's'} · ⌘Z to undo`);
+      toast(`Renamed ${old} → ${r.changes[0]?.insert.replace(/^[`"]|[`"]$/g, '') ?? ''} in ${r.changes.length} place${r.changes.length === 1 ? '' : 's'} · ⌘Z to undo`);
     }
     close(refocus) {
       if (this.dom.hidden) return;
@@ -165,7 +170,7 @@ export function symbolFeatures({ setFocusRanges, toast = () => {}, onPreview = (
     const byId = new Map(a.graph.nodes.map((n) => [n.id, n]));
     const names = (ids) => ids.map((id) => byId.get(id)).filter((n) => n && n.kind !== 'subquery').map((n) => esc(n.label)).join(', ');
     const lines = [];
-    let title = esc(sym.kind === 'param' ? '@' + sym.name : sym.name);
+    let title = esc(shown(sym));
     if (sym.kind === 'cte' || sym.kind === 'table') {
       const n = sym.node;
       if (n.full && n.full !== n.label) lines.push(`<code>${esc(n.full)}</code>`);
@@ -186,9 +191,11 @@ export function symbolFeatures({ setFocusRanges, toast = () => {}, onPreview = (
       if (it.onText && !it.onText.startsWith('USING')) lines.push(`<code>ON ${esc(clip(it.onText, 90))}</code>`);
     } else if (sym.kind === 'variable') {
       const v = sym.variable;
-      lines.push(`<code>DECLARE ${esc(sym.name)}${v.type ? ' ' + esc(v.type) : ''}${v.valueText ? ' DEFAULT ' + esc(clip(v.valueText, 60)) : ''}</code>`);
+      lines.push(v.kind === 'set'
+        ? `<code>SET ${esc(sym.name)} = ${esc(clip(v.valueText || '', 60))}</code>`
+        : `<code>DECLARE ${esc(sym.name)}${v.type ? ' ' + esc(v.type) : ''}${v.valueText ? ' DEFAULT ' + esc(clip(v.valueText, 60)) : ''}</code>`);
     } else if (sym.kind === 'param') {
-      lines.push('Query parameter: its value is set in BigQuery when the query runs');
+      lines.push(`Query parameter: ${dialectOf(a.dialect).paramNote}`);
     } else if (sym.kind === 'cteParam') {
       const cp = sym.cteParam;
       lines.push(`<code>${esc(clip(cp.value, 60))}</code> from ${esc(cp.cteLabel)}`);
@@ -200,7 +207,7 @@ export function symbolFeatures({ setFocusRanges, toast = () => {}, onPreview = (
     const acts = [
       sym.def ? btn('def', 'Definition', `F12 or ${MOD}click`) : '',
       occurrences(sym).length > 1 ? btn('refs', `Uses (${uses})`, '⇧F12') : '',
-      RENAMABLE.has(sym.kind) ? btn('rename', 'Rename', 'F2') : '',
+      canRename(sym) ? btn('rename', 'Rename', 'F2') : '',
       sym.kind === 'cte' ? btn('preview', 'Copy preview', `${MOD}⌥Enter: copies WITH … SELECT * FROM ${sym.name} LIMIT 100`) : '',
     ].join('');
     return `<div class="h-head"><span class="h-kind ${sym.kind}">${KIND[sym.kind]}</span><b>${title}</b></div>` +

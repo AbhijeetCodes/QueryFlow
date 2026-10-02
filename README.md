@@ -1,93 +1,147 @@
-# <img src="public/logo.svg" width="28" height="28" alt="" align="top"> QueryFlow
+<div align="center">
 
-A fast, lightweight SQL editor for **reading and editing** big BigQuery, PostgreSQL
-and MySQL queries, right in the browser. Paste an old query and it formats it, draws how the tables
-join, and lists every variable and hardcoded filter value so you can change them
-in one place. It works like a code editor for SQL: hover a name to see what it is,
-jump to where a CTE or alias is defined, rename it everywhere, copy a ready-to-run
-preview of any CTE, and share the query as a link. For BigQuery you can also **run the query on
-small test tables** you type in, right in the browser. Then copy the SQL back into your database.
+# <img src="public/logo.svg" width="32" height="32" alt="" align="top"> QueryFlow
 
-Everything runs client-side from the SQL text: no server, no login, no database
-connection. Your query stays in your browser (in `localStorage`). A share link
-carries the query inside the link itself, so even then nothing is uploaded.
-That makes QueryFlow a plain static site you can host anywhere for free.
+**A fast, private SQL editor for reading and editing big BigQuery, PostgreSQL and MySQL queries, right in your browser.**
 
-## Run locally
+Free · no login · no server · your SQL never leaves your browser
 
-```bash
-npm install
-npm run dev        # http://localhost:5199
-```
+**[Open QueryFlow →](https://abhijeetcodes.github.io/QueryFlow/)**
 
-`npm test` runs the analyzer, formatter, diff, navigation and test-run tests (the last run real SQL on DuckDB's Node build). `npm run build` writes the static site to `dist/`.
+<a href="docs/media/queryflow-intro.mp4"><img src="docs/media/intro-teaser.gif" width="800" alt="QueryFlow: pasting a messy query formats it, and every variable and filter value shows up in a panel on the right"></a>
 
-## Publish on GitHub Pages
+<sub>▶ <a href="docs/media/queryflow-intro.mp4">Watch the 100-second intro video</a></sub>
 
-`.github/workflows/pages.yml` runs the tests, builds and deploys on every push to `main`.
-The build uses relative paths, so it works under the repository's sub-path.
+</div>
 
-1. Create an empty repository on GitHub (for example `QueryFlow`). Free Pages needs a public
-   repository on a personal plan.
-2. Push this repo to it:
-   ```bash
-   git remote add origin https://github.com/<user>/QueryFlow.git
-   git push -u origin main
-   ```
-3. In the repository, open *Settings → Pages* and set *Source* to **GitHub Actions**.
-4. The *Actions* tab shows the deploy. When it finishes, the editor is live at
-   `https://<user>.github.io/QueryFlow/`. Every later push to `main` redeploys it, and a failing
-   test stops the deploy.
+---
 
-Share links point at whatever address the page is served from, so links copied from the
-GitHub Pages site open there for anyone.
+Inherited a 1,000-line query and need to change one date? Paste it into QueryFlow. It formats the
+SQL, draws how the tables and CTEs join, explains each step in plain words, and lists every
+variable and hardcoded filter value so you can change them in one place. It works like a code
+editor for SQL: hover a name to see what it is, jump to where it's defined, rename it everywhere,
+and catch the mistakes that quietly change your numbers. For BigQuery you can even **run the query
+on small test tables** inside the browser before you copy it back to your database.
 
-### Other free hosts
+## Highlights
 
-| Host | Free URL | Setup |
-|---|---|---|
-| **Cloudflare Pages** | `queryflow.pages.dev` | *Workers & Pages → Create → Pages → Connect to Git*. Build command `npm run build`, output directory `dist`. Cloudflare Pages rejects files over 25 MB, and the DuckDB engine behind the Run tab is ~36 MB, so prefer another host if you want test runs. |
-| **Netlify** | `queryflow.netlify.app` | *Add new site → Import from Git*, or drag the `dist/` folder onto app.netlify.com/drop. Build command `npm run build`, publish directory `dist`. |
-| **Vercel** | `queryflow.vercel.app` | *Add New → Project*, framework preset *Vite*. |
+<table>
+<tr>
+<td width="50%" valign="top">
 
-All of them, and GitHub Pages, can also serve a custom domain you own.
+### 🧭 See how the query fits together
 
-## The example
+The **Graph** draws tables → CTEs → output, with join types, keys, filters, dedupes and date windows on each node. Click a node to jump to its SQL; double-click to focus its lineage.
 
-The editor starts empty. Its *Load the example* button (also in the ⋯ menu) puts in a short
-query on a made-up Pokédex, each trainer's strongest Pokémon, and adds its three test tables
-(`pokedex.pokemon`, `pokedex.trainers`, `pokedex.teams`, the practice database) to the Run tab. It has something for
-each feature: two variables, filter values, a date window, joins, a `ROW_NUMBER` dedupe and two
-lint warnings. ⌘Z brings back what was in the editor.
+</td>
+<td width="50%" valign="top">
 
-## Layout
+### 📋 Read it top to bottom
 
-| Left | Right top | Right bottom |
-|---|---|---|
-| Editor: highlighting for the chosen dialect, lint squiggles, folding, autocomplete, hover cards, and a sticky header naming the CTE you're scrolled into | **Variables** (`DECLARE`, `SET @var`, params CTE), **parameters**, **hardcoded filter values**, **date windows** | **Steps** (the query as a top-to-bottom recipe), **Graph** (tables → CTEs → output), a **Tables** list and **Run** (test tables and results) |
+The **Steps** tab turns the query into a recipe: one card per CTE in execution order, saying what it reads, how it joins, what it filters or aggregates, and what it feeds.
 
-## Dialects
+</td>
+</tr>
+<tr>
+<td valign="top">
 
-Pick **BigQuery**, **PostgreSQL** or **MySQL** next to the logo. The choice is remembered and
-travels with share links. It decides how the text is read (quotes, comments, parameters),
-highlighted, formatted and checked; the graph, steps, rename and previews work the same in all three.
+### 🎛️ Every value in one place
 
-| | BigQuery | PostgreSQL | MySQL |
-|---|---|---|---|
-| Quoted names | `` `proj.ds.t` `` | `"Name"` | `` `name` `` |
-| Variables | `DECLARE x TYPE DEFAULT …` | none in plain SQL: a params CTE plays that role | `SET @x = …` |
-| Parameters | `@name` | `$1`, `:name` | `@x` that no `SET` defines |
-| Also understood | `QUALIFY`, `UNNEST`, `FOR SYSTEM_TIME AS OF` | `::` casts, `$$` strings, `DISTINCT ON` (a dedupe), `LATERAL`, `CURRENT_DATE - INTERVAL '7 days'` | `#` comments, `:=`, `DATE_SUB(CURDATE(), INTERVAL 7 DAY)`, `CREATE TABLE t SELECT …` |
-| BigQuery-only lint | `UNION` needs ALL / DISTINCT, DECLARE first, `SELECT *` billing, legacy `[p:d.t]`, variable shadowed by a column | – | – |
+Variables, `@parameters`, hardcoded filter values and date windows are listed on the right. Edit one there and every occurrence in the SQL follows. One click turns literals into `DECLARE`s.
 
-Switching dialect re-reads the same text; an untouched example query is swapped for that dialect's example.
+</td>
+<td valign="top">
 
-**Detect dialect on paste** (on by default, in the ⋯ menu): pasting or opening a whole query that
-clearly belongs to another dialect switches to it, and the toast says why (`:: casts`,
-`` `project.dataset` `` paths, `SET @variables`, `LIMIT 10, 20`, …). Clues inside comments and strings
-don't count, and SQL that runs anywhere, or has clues for two dialects, leaves the choice alone.
+### 🔎 Navigate it like code
 
-## Features
+Hover any CTE, table, alias or variable for a card that explains it. Go to definition (F12), find uses (⇧F12), rename everywhere (F2), and autocomplete CTE columns.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### ⚠️ Catch silent mistakes
+
+Lint for the bugs that don't error out: a LEFT JOIN undone by a `WHERE`, fan-out joins inflating a `SUM`, mismatched date windows, `= NULL`, `NOT IN` with NULLs, unused CTEs, costly `SELECT *`.
+
+</td>
+<td valign="top">
+
+### ▶️ Run it on test data (BigQuery)
+
+Type, paste or upload small CSV / Excel tables and run the query with DuckDB compiled to WebAssembly, all in your browser. A built-in Pokédex practice database helps you learn SQL.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### ✅ Review before you copy
+
+Copying back shows a diff against the query you pasted, so you see every change before it goes into production.
+
+</td>
+<td valign="top">
+
+### 🔗 Share as a link
+
+The query is compressed into the link's `#hash`, which browsers never send to the server, so sharing uploads nothing, not even to the host.
+
+</td>
+</tr>
+</table>
+
+## Screenshots
+
+**The editor, with the variables panel and the join graph**
+
+<img src="docs/media/editor-graph.png" alt="QueryFlow editor showing a BigQuery query on the left, its variables and date windows on the top right and a lineage graph of tables and CTEs on the bottom right">
+
+<table>
+<tr>
+<td width="52%" valign="top">
+
+**Hover a name to see what it is**
+
+<img src="docs/media/hover.png" alt="Hover card on a CTE name showing where it is defined, what it reads, its filters and what it feeds, with Definition, Uses, Rename and Copy preview buttons">
+
+</td>
+<td width="48%" valign="top">
+
+**The query as steps**
+
+<img src="docs/media/steps.png" alt="Steps tab listing each CTE in execution order with its source table, WHERE conditions, outputs and the step it feeds">
+
+</td>
+</tr>
+</table>
+
+**Run on test tables, right in the browser** (Midnight theme)
+
+<img src="docs/media/run.png" alt="Run tab in the dark theme showing the query's result rows from small test tables, computed by DuckDB in the browser">
+
+## Private by design
+
+Everything runs client-side from the SQL text: no server, no login, no database connection, no
+tracking. Your query is kept in your browser's `localStorage`. A share link
+carries the query inside the link itself, and the test-run engine is served with the site and
+never contacts anything else. That also makes QueryFlow a plain static site you can host anywhere
+for free.
+
+## Try it
+
+Open **[abhijeetcodes.github.io/QueryFlow](https://abhijeetcodes.github.io/QueryFlow/)**, then:
+
+1. Click **Load the example** on the empty editor (or ⋯ → *Load the example*). It loads a short
+   query on a made-up Pokédex, each trainer's strongest Pokémon, with something for every feature:
+   two variables, filter values, a date window, joins, a `ROW_NUMBER` dedupe and two lint warnings.
+2. Or paste your own query. It's formatted on paste (⌘Z shows the original), and the dialect is
+   detected from clues like `::` casts, `` `project.dataset` `` paths or `SET @variables`.
+3. Press **⌘Enter** to run the example on its test tables, or open the Run tab's *Practice ▾* menu
+   for seven guided SQL exercises.
+
+## Features in detail
 
 ### Navigate and refactor
 
@@ -174,6 +228,35 @@ puts them back.
 - **Light / dark**: four themes in the ⋯ menu. It follows your system setting until you pick one.
 - **Resizable panes**: drag the gutters between the editor and the panels. Sizes are remembered.
 
+## Dialects
+
+Pick **BigQuery**, **PostgreSQL** or **MySQL** next to the logo. The choice is remembered and
+travels with share links. It decides how the text is read (quotes, comments, parameters),
+highlighted, formatted and checked; the graph, steps, rename and previews work the same in all three.
+
+| | BigQuery | PostgreSQL | MySQL |
+|---|---|---|---|
+| Quoted names | `` `proj.ds.t` `` | `"Name"` | `` `name` `` |
+| Variables | `DECLARE x TYPE DEFAULT …` | none in plain SQL: a params CTE plays that role | `SET @x = …` |
+| Parameters | `@name` | `$1`, `:name` | `@x` that no `SET` defines |
+| Also understood | `QUALIFY`, `UNNEST`, `FOR SYSTEM_TIME AS OF` | `::` casts, `$$` strings, `DISTINCT ON` (a dedupe), `LATERAL`, `CURRENT_DATE - INTERVAL '7 days'` | `#` comments, `:=`, `DATE_SUB(CURDATE(), INTERVAL 7 DAY)`, `CREATE TABLE t SELECT …` |
+| BigQuery-only lint | `UNION` needs ALL / DISTINCT, DECLARE first, `SELECT *` billing, legacy `[p:d.t]`, variable shadowed by a column | – | – |
+
+Switching dialect re-reads the same text; an untouched example query is swapped for that dialect's example.
+
+**Detect dialect on paste** (on by default, in the ⋯ menu): pasting or opening a whole query that
+clearly belongs to another dialect switches to it, and the toast says why (`:: casts`,
+`` `project.dataset` `` paths, `SET @variables`, `LIMIT 10, 20`, …). Clues inside comments and strings
+don't count, and SQL that runs anywhere, or has clues for two dialects, leaves the choice alone.
+
+## Layout
+
+| Left | Right top | Right bottom |
+|---|---|---|
+| Editor: highlighting for the chosen dialect, lint squiggles, folding, autocomplete, hover cards, and a sticky header naming the CTE you're scrolled into | **Variables** (`DECLARE`, `SET @var`, params CTE), **parameters**, **hardcoded filter values**, **date windows** | **Steps** (the query as a top-to-bottom recipe), **Graph** (tables → CTEs → output), a **Tables** list and **Run** (test tables and results) |
+
+On phones the views switch from a bar at the bottom, one at a time, and the graph can be pinch-zoomed.
+
 ## Keyboard
 
 On Windows and Linux, read ⌘ as Ctrl and ⌥ as Alt.
@@ -194,7 +277,47 @@ On Windows and Linux, read ⌘ as Ctrl and ⌥ as Alt.
 
 In Chrome on Windows and Linux, F12 opens the developer tools; use Ctrl-click or the hover card's *Definition* button instead.
 
+## Run locally
+
+```bash
+npm install
+npm run dev        # http://localhost:5199
+```
+
+`npm test` runs the analyzer, formatter, diff, navigation and test-run tests (the last run real SQL
+on DuckDB's Node build). `npm run build` writes the static site to `dist/`.
+
+## Host your own copy
+
+QueryFlow is a static site, so you can run your own copy for free.
+
+### GitHub Pages
+
+`.github/workflows/pages.yml` runs the tests, builds and deploys on every push to `main`.
+The build uses relative paths, so it works under the repository's sub-path.
+
+1. Fork this repository on GitHub. Free Pages needs a public repository on a personal plan.
+2. In your fork, open *Settings → Pages* and set *Source* to **GitHub Actions**.
+3. Push to `main`, or run the workflow from the *Actions* tab. When the deploy finishes, the editor is live at
+   `https://<user>.github.io/QueryFlow/`. Every later push to `main` redeploys it, and a failing
+   test stops the deploy.
+
+Share links point at whatever address the page is served from, so links copied from the
+GitHub Pages site open there for anyone.
+
+### Other free hosts
+
+| Host | Free URL | Setup |
+|---|---|---|
+| **Cloudflare Pages** | `queryflow.pages.dev` | *Workers & Pages → Create → Pages → Connect to Git*. Build command `npm run build`, output directory `dist`. Cloudflare Pages rejects files over 25 MB, and the DuckDB engine behind the Run tab is ~36 MB, so prefer another host if you want test runs. |
+| **Netlify** | `queryflow.netlify.app` | *Add new site → Import from Git*, or drag the `dist/` folder onto app.netlify.com/drop. Build command `npm run build`, publish directory `dist`. |
+| **Vercel** | `queryflow.vercel.app` | *Add New → Project*, framework preset *Vite*. |
+
+All of them, and GitHub Pages, can also serve a custom domain you own.
+
 ## How it fits together
+
+For contributors: a map of the source.
 
 | File | Role |
 |---|---|

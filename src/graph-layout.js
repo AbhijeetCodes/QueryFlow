@@ -3,7 +3,7 @@
 import dagre from '@dagrejs/dagre';
 
 /**
- * @param {{ dir: 'LR'|'TB', nodes: {id, width, height}[], edges: {from, to, labelWidth, weight}[] }} input
+ * @param {{ dir: 'LR'|'TB', nodes: {id, width, height}[], edges: {from, to, labelWidth, labelHeight?, weight}[] }} input
  * @returns {{ dir, width, height, nodes: Record<id, {x, y, width, height}>, edges: Record<'from\nto', {points, x, y, width}> }}
  */
 export function layoutGraph({ dir, nodes, edges }) {
@@ -12,7 +12,7 @@ export function layoutGraph({ dir, nodes, edges }) {
   g.setDefaultEdgeLabel(() => ({}));
   for (const n of nodes) g.setNode(n.id, { width: n.width, height: n.height });
   for (const e of edges) {
-    g.setEdge(e.from, e.to, e.labelWidth ? { width: e.labelWidth, height: 16, labelpos: 'c', weight: e.weight } : { weight: e.weight });
+    g.setEdge(e.from, e.to, e.labelWidth ? { width: e.labelWidth, height: e.labelHeight || 16, labelpos: 'c', weight: e.weight } : { weight: e.weight });
   }
   dagre.layout(g);
   const gi = g.graph();

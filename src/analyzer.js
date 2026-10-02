@@ -1233,6 +1233,28 @@ export function analyze(src) {
   }
   detectDedupe(nodeList, edgeList);
 
+  // ---- join partners ------------------------------------------------------
+  // The earlier FROM items each join's ON names (`e.dept_id = d.dept_id` ties d to e),
+  // so the graph can say which table a join attaches to, not only on which columns.
+  // A second item whose condition names no alias (USING, bare columns) joins the first.
+  for (const n of nodeList) {
+    for (const items of n.blocks) {
+      items.forEach((it, j) => {
+        if (!j || it.joinType === 'CROSS' || it.joinType === 'COMMA') return;
+        const named = new Set();
+        if (it.onRange) {
+          for (let i = it.onRange[0]; i + 1 < it.onRange[1]; i++) {
+            if ((T[i].t === 'ident' || T[i].t === 'qident') && txt(i + 1) === '.' && txt(i - 1) !== '.') named.add(unquoteIdent(T[i].s).toLowerCase());
+          }
+        }
+        named.delete(itemKey(it));
+        const earlier = items.slice(0, j);
+        const partners = earlier.filter((p) => named.has(itemKey(p)));
+        it.partners = partners.length ? partners : j === 1 && !named.size ? [earlier[0]] : [];
+      });
+    }
+  }
+
   // ---- joins that repeat rows (fan-out) -----------------------------------
   // A join whose key repeats on one side returns each row of the other side once
   // per match. That is how one-to-many joins work and is usually intended. It

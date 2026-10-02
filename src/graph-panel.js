@@ -32,7 +32,27 @@ function semiEdgeText(e) {
 
 function edgeText(e) {
   const labels = [...new Set(e.joins.map(joinLabel).filter(Boolean))];
+  // The first read of a self-joined table: name its alias, the other reads have their own boxes.
+  if (!labels.length && e.selfJoin?.alias) labels.push('as ' + e.selfJoin.alias);
   const s = labels.join(' + ');
+  return s.length > 34 ? s.slice(0, 33) + '…' : s;
+}
+
+// Second label line: the table(s) the join attaches to ("with employees"), from the
+// aliases its ON names. A self-joined partner gets its alias: "with employees (e)".
+function edgeWith(e, byId) {
+  const owner = byId.get(e.to);
+  const names = new Set();
+  for (const j of e.joins) {
+    for (const p of j.partners || []) {
+      const block = owner?.blocks.find((b) => b.includes(p));
+      const twice = p.nodeId && block && block.filter((x) => x.nodeId === p.nodeId).length > 1;
+      const name = (p.nodeId && byId.get(p.nodeId)?.label) || p.alias || (p.name || '').split('.').pop();
+      names.add(twice && p.alias ? `${name} (${p.alias})` : name);
+    }
+  }
+  if (!names.size) return '';
+  const s = 'with ' + [...names].join(', ');
   return s.length > 34 ? s.slice(0, 33) + '…' : s;
 }
 
@@ -55,6 +75,36 @@ const LABEL_FONT = '600 12.5px Inter, system-ui, sans-serif';
 const SUB_FONT = '10.5px Inter, system-ui, sans-serif';
 const MAX_NODE_W = 290;
 
+// A step that reads the same table or CTE twice in one FROM clause (a self-join) would
+// otherwise get one merged edge that shows only the last join. Draw every extra read as
+// an alias box of its own, with its own edge and join keys. Display only: the alias box
+// stands for the same node (data-id), so selection, hover and lineage treat them as one.
+function splitSelfJoins(nodes, edges) {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const ghosts = [];
+  const out = [];
+  for (const e of edges) {
+    const owner = byId.get(e.to);
+    const real = e.role === 'filter' || e.role === 'params' ? [] : e.joins.filter((j) => !j.inline && !j.params);
+    const extra = new Set();
+    for (const block of owner?.blocks || []) {
+      const mine = real.filter((j) => block.includes(j));
+      for (const j of mine.slice(1)) extra.add(j);
+    }
+    if (!extra.size) { out.push(e); continue; }
+    const src = byId.get(e.from);
+    const keep = e.joins.filter((j) => !extra.has(j));
+    out.push({ ...e, joins: keep, selfJoin: keep.find((j) => real.includes(j)) });
+    let i = 0;
+    for (const j of extra) {
+      const id = `${e.from}@${e.to}#${++i}`;
+      ghosts.push({ ...src, id, ref: src.id, ghost: j, in: [], out: [e.to], unused: false });
+      out.push({ ...e, id: `${id}→${e.to}`, from: id, fromRef: src.id, joins: [j], role: 'data' });
+    }
+  }
+  return { nodes: ghosts.length ? [...nodes, ...ghosts] : nodes, edges: out };
+}
+
 function isDerivation(e, byId) {
   const to = byId.get(e.to);
   return !!to && ['cte', 'subquery', 'created'].includes(to.kind) && soleSource(to) === e.from;
@@ -62,6 +112,11 @@ function isDerivation(e, byId) {
 
 // Sizes, subtitle and chip placement for one node.
 function decorate(n, byId) {
+  if (n.ghost) {
+    const sub = `self-join${n.ghost.alias ? ' · as ' + n.ghost.alias : ''}`;
+    const width = Math.min(MAX_NODE_W, Math.max(textWidth(n.label, LABEL_FONT), textWidth(sub, SUB_FONT)) + 28);
+    return { sub, derived: false, chipRows: [], chipTop: 41, width, height: 42 };
+  }
   const src = soleSource(n);
   let sub = n.sub || '';
   const derived = !!src && ['cte', 'subquery', 'created'].includes(n.kind);
@@ -441,7 +496,16 @@ export function createGraphPanel(root, { view, onSelect }) {
 
   vp.addEventListener('click', (e) => {
     const n = e.target.closest('.node');
-    if (n) { select(n.dataset.id, { jump: true }); return; }
+    if (!n) return;
+    if (n.dataset.at) {
+      // An alias box of a self-join: select the table, jump to that read of it.
+      const at = { from: +n.dataset.at, to: +n.dataset.atEnd };
+      select(n.dataset.id);
+      focusRanges(view, [at], { scroll: false });
+      view.dispatch({ selection: { anchor: at.from }, effects: EditorView.scrollIntoView(at.from, { y: 'center' }) });
+      return;
+    }
+    select(n.dataset.id, { jump: true });
   });
   // Hover: light up the box, its direct inputs and the edges between them.
   let hoverId = null;
@@ -557,7 +621,12 @@ export function createGraphPanel(root, { view, onSelect }) {
         : `<span class="muted">${esc(it.name)}</span>`;
       const alias = it.alias ? ` <span class="alias">${esc(it.alias)}</span>` : '';
       const on = it.onText ? `<div class="on">${it.onText.startsWith('USING') ? '' : 'ON '}${esc(it.onText)}</div>` : '';
-      return `<li><span class="jk ${JOIN_CLASS[it.joinType] || 'from'}">${esc(kw)}</span> ${src}${alias}${on}</li>`;
+      // The earlier FROM item(s) this join attaches to.
+      const partners = (it.partners || []).map((p) => (p.nodeId
+        ? `<button class="link" data-node="${esc(p.nodeId)}">${esc(p.kind === 'subquery' ? p.alias || '(subquery)' : nameOf(p.nodeId))}</button>`
+        : `<span>${esc(p.alias || p.name)}</span>`) + (p.alias && p.kind !== 'subquery' ? ` <span class="alias">${esc(p.alias)}</span>` : ''));
+      const withLine = partners.length ? `<div class="on with">with ${partners.join(', ')}</div>` : '';
+      return `<li><span class="jk ${JOIN_CLASS[it.joinType] || 'from'}">${esc(kw)}</span> ${src}${alias}${withLine}${on}</li>`;
     }).join('')).map((b) => `<ul class="joins">${b}</ul>`).join('');
     const feeds = n.out.map((id) => `<button class="link" data-node="${esc(id)}">${esc(nameOf(id))}</button>`).join(', ');
     detail.innerHTML = `
@@ -653,9 +722,12 @@ export function createGraphPanel(root, { view, onSelect }) {
     linkBtn.hidden = !helperCount;
     linkBtn.textContent = showFilterLinks ? 'Hide links' : `Show links (${helperCount})`;
     if (!showFilterLinks) edges = edges.filter((e) => !helper(e));
+    ({ nodes, edges } = splitSelfJoins(nodes, edges));
+    const allById = new Map(a.graph.nodes.map((x) => [x.id, x]));
+    edges = edges.map((e) => ({ ...e, withText: edgeWith(e, allById) }));
     empty.hidden = nodes.length > 0;
     const sig = nodes.map((n) => n.id + ':' + shapeChips(n.shape).map((c) => c.text).join(',')).join('|') +
-      '#' + edges.map((e) => e.id + edgeText(e)).join('|') + '#' + direction + '#' + isolate + '#' + showFilterLinks;
+      '#' + edges.map((e) => e.id + edgeText(e) + e.withText).join('|') + '#' + direction + '#' + isolate + '#' + showFilterLinks;
     if (sig === signature) {
       if (selected) select(selected);
       return;
@@ -676,9 +748,12 @@ export function createGraphPanel(root, { view, onSelect }) {
     const deco = new Map(nodes.map((n) => [n.id, decorate(n, byId)]));
     const boxes = nodes.map((n) => ({ id: n.id, width: deco.get(n.id).width, height: deco.get(n.id).height }));
     const links = edges.map((e) => {
-      const text = isDerivation(e, byId) ? '' : e.role === 'filter' || e.role === 'params' ? semiEdgeText(e) : edgeText(e);
+      const plain = isDerivation(e, byId) || e.role === 'filter' || e.role === 'params';
+      const text = isDerivation(e, byId) ? '' : plain ? semiEdgeText(e) : edgeText(e);
+      const sub = plain ? '' : e.withText;
+      const labelWidth = text || sub ? Math.max(textWidth(text, SUB_FONT), textWidth(sub, SUB_FONT)) + 10 : 0;
       // Helper links pull less on the layout than real data flow.
-      return { from: e.from, to: e.to, labelWidth: text ? textWidth(text, SUB_FONT) + 10 : 0, weight: e.role === 'filter' || e.role === 'params' ? 1 : 2 };
+      return { from: e.from, to: e.to, labelWidth, labelHeight: text && sub ? 28 : 16, weight: e.role === 'filter' || e.role === 'params' ? 1 : 2 };
     });
     const jobs = (direction === 'auto' ? ['LR', 'TB'] : [direction]).map((dir) => {
       const input = { dir, nodes: boxes, edges: links };
@@ -717,10 +792,14 @@ export function createGraphPanel(root, { view, onSelect }) {
       const text = derive ? '' : semi ? semiEdgeText(e) : edgeText(e);
       const dashed = !derive && !semi && (e.role === 'lookup' || byId.get(e.from)?.kind === 'subquery' || e.joins.every((j) => j.kind === 'subquery')) ? ' dashed' : '';
       const title = e.joins.map((j) => `${j.joinType === 'FROM' ? 'FROM' : j.joinType + ' JOIN'} ${j.name}${j.alias ? ' ' + j.alias : ''}${j.onText ? '\n  ' + j.onText : ''}`).join('\n');
-      const lbl = text && Number.isFinite(d.x) && Number.isFinite(d.y)
-        ? `<g class="elabel" transform="translate(${d.x},${d.y})"><rect x="${-d.width / 2}" y="-8" width="${d.width}" height="16" rx="4"/><text y="3.5" text-anchor="middle">${esc(text)}</text></g>`
+      const sub = derive || semi ? '' : e.withText;
+      const two = text && sub;
+      const lbl = (text || sub) && Number.isFinite(d.x) && Number.isFinite(d.y)
+        ? `<g class="elabel" transform="translate(${d.x},${d.y})"><rect x="${-d.width / 2}" y="${two ? -14 : -8}" width="${d.width}" height="${two ? 28 : 16}" rx="4"/>` +
+          (text ? `<text y="${two ? -2.5 : 3.5}" text-anchor="middle">${esc(text)}</text>` : '') +
+          (sub ? `<text class="with" y="${two ? 10 : 3.5}" text-anchor="middle">${esc(sub)}</text>` : '') + '</g>'
         : '';
-      return `<g class="edge ${cls}${dashed}" data-from="${esc(e.from)}" data-to="${esc(e.to)}">
+      return `<g class="edge ${cls}${dashed}" data-from="${esc(e.fromRef ?? e.from)}" data-to="${esc(e.to)}">
         <title>${esc(derive ? 'derived from ' + (byId.get(e.from)?.label || '') : semi ? 'subquery filter (rows are kept or dropped, no columns are added):\n' + title : title)}</title>
         <path d="${smoothPath(d.points)}" marker-end="url(#arrow-${cls})"/>
         ${lbl}
@@ -731,12 +810,14 @@ export function createGraphPanel(root, { view, onSelect }) {
       const dc = deco.get(n.id);
       const x = p.x - p.width / 2;
       const y = p.y - p.height / 2;
-      const title = `${KIND_LABEL[n.kind] || n.kind}: ${n.full || n.label}${n.unused ? ' (unused)' : ''}`;
+      const title = `${KIND_LABEL[n.kind] || n.kind}: ${n.full || n.label}${n.unused ? ' (unused)' : ''}` +
+        (n.ghost ? `\nread again${n.ghost.alias ? ' as ' + n.ghost.alias : ''} in the same FROM (self-join)` : '');
       const chips = dc.chipRows.map((row, ri) => row.map((c) => {
         const cy = dc.chipTop + ri * CHIP_ROW;
         return `<g class="chip ${c.cls}" transform="translate(${c.x + 14},${cy})"><title>${esc(c.title || c.text)}</title><rect width="${c.w}" height="15" rx="4"/><text x="${c.w / 2}" y="11" text-anchor="middle">${esc(c.text)}</text></g>`;
       }).join('')).join('');
-      return `<g class="node ${n.kind}${n.unused ? ' unused' : ''}${dc.derived ? ' derived' : ''}" data-id="${esc(n.id)}" transform="translate(${x},${y})">
+      const at = n.ghost ? ` data-at="${n.ghost.from}" data-at-end="${n.ghost.to}"` : '';
+      return `<g class="node ${n.kind}${n.ghost ? ' ghost' : ''}${n.unused ? ' unused' : ''}${dc.derived ? ' derived' : ''}" data-id="${esc(n.ref ?? n.id)}"${at} transform="translate(${x},${y})">
         <title>${esc(title)}</title>
         <rect width="${p.width}" height="${p.height}" rx="7"/>
         <rect class="stripe" width="4" height="${p.height}" rx="2"/>

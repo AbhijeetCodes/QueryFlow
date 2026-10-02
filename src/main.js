@@ -1,5 +1,6 @@
 import './styles.css';
 import { openLintPanel } from '@codemirror/lint';
+import { EditorView } from '@codemirror/view';
 import { undo, redo, undoDepth, redoDepth } from '@codemirror/commands';
 import { createEditor } from './editor.js';
 import { analyzeDoc } from './analyzer.js';
@@ -7,6 +8,8 @@ import { createVarsPanel } from './vars-panel.js';
 import { createGraphPanel } from './graph-panel.js';
 import { SAMPLE_SQL } from './sample.js';
 import { diffLines, diffStats } from './diff.js';
+import { previewSql, cteAt } from './symbols.js';
+import { encodeShare, decodeShare } from './share.js';
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem('queryflow.' + k); return v === null ? d : v; } catch { return d; } },
@@ -95,7 +98,21 @@ const view = createEditor(document.getElementById('editor'), {
     { key: 'Mod-s', run: (v) => { formatDoc(v); return true; }, preventDefault: true },
     { key: 'Mod-Shift-Enter', run: (v) => { copyAll(v); return true; } },
     { key: 'Mod-Shift-m', run: (v) => { openLintPanel(v); return true; } },
+    { key: 'Mod-o', run: () => { openFile(); return true; }, preventDefault: true },
+    { key: 'Mod-Shift-s', run: () => { saveFile(); return true; }, preventDefault: true },
   ],
+  extensions: [EditorView.domEventHandlers({
+    // A .sql file dropped on the editor replaces the query (text drops still insert).
+    drop(e) {
+      const file = e.dataTransfer?.files?.[0];
+      if (!file) return false;
+      e.preventDefault();
+      readFile(file);
+      return true;
+    },
+  })],
+  toast,
+  onPreview: (id) => previewCte(id),
   onDocChange: () => {
     syncHistoryButtons();
     clearTimeout(refreshTimer);
@@ -127,7 +144,78 @@ const vars = createVarsPanel(document.getElementById('vars'), { view, toast, onP
 const graph = createGraphPanel(document.getElementById('graph'), {
   view,
   onSelect: (id) => vars.focusStep(id),
+  onPreview: (id) => previewCte(id),
 });
+
+// ---- preview a CTE -------------------------------------------------------------
+// Copies a query that shows the CTE's rows: the DECLAREs, the CTEs it reads, then
+// SELECT * FROM it LIMIT 100. The usual way to debug one step of a long query.
+function previewCte(id) {
+  const p = previewSql(analyzeDoc(view.state.doc), id);
+  if (!p) return;
+  writeClipboard(p.sql, `Copied a preview of ${p.label} (${plural(p.ctes, 'CTE')}, LIMIT 100), ready to paste into BigQuery`);
+}
+
+// ---- load a whole query (paste button, file, shared link) --------------------------
+// One transaction, so ⌘Z brings back what was there. `format` follows "Format on paste".
+async function loadQuery(text, note, { format = formatOnPaste } = {}) {
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: 'input.replace' });
+  if (format) await formatDoc(view, { quiet: true, note });
+  else toast(note.replace(/^Pasted & formatted/, 'Loaded'));
+  setOriginal(view.state.doc.toString());
+  view.focus();
+}
+
+// ---- open / save .sql files --------------------------------------------------------
+const fileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.sql,.txt,.bq,text/plain', hidden: true });
+document.body.append(fileInput);
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) readFile(fileInput.files[0]);
+  fileInput.value = '';
+});
+function openFile() { fileInput.click(); }
+async function readFile(file) {
+  if (file.size > 20 * 1024 * 1024) { toast(`${file.name} is over 20 MB, too big to open`, 'error'); return; }
+  let text;
+  try { text = await file.text(); } catch { toast(`Couldn't read ${file.name}`, 'error'); return; }
+  if (text.includes('\u0000')) { toast(`${file.name} doesn't look like a text file`, 'error'); return; }
+  store.set('fileName', file.name);
+  await loadQuery(text, `Opened ${file.name}${formatOnPaste ? ' & formatted' : ''} · ⌘Z to undo`);
+}
+function saveFile() {
+  let name = store.get('fileName', 'query.sql');
+  if (!/\.(sql|bq|txt)$/i.test(name)) name += '.sql';
+  const url = URL.createObjectURL(new Blob([view.state.doc.toString()], { type: 'text/plain' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast(`Saved ${name} to your downloads`);
+}
+
+// ---- share by link -------------------------------------------------------------------
+// The query travels inside the link's #hash, which browsers don't send to the host.
+async function shareLink() {
+  const text = view.state.doc.toString();
+  if (!text.trim()) { toast('Nothing to share yet', 'error'); return; }
+  let hash;
+  try { hash = await encodeShare(text); } catch { toast('This browser cannot build share links', 'error'); return; }
+  const url = location.href.split('#')[0] + hash;
+  const kb = Math.round(url.length / 1024);
+  await writeClipboard(url, url.length > 8000
+    ? `Link copied (${kb} KB). Some chat apps cut links this long; Save as .sql is safer.`
+    : 'Link copied. The query is inside the link: nothing is uploaded.');
+}
+async function openShared() {
+  let text;
+  try { text = await decodeShare(location.hash); } catch { toast('This share link is damaged or incomplete', 'error'); }
+  if (text == null) return;
+  history.replaceState(null, '', location.href.split('#')[0]);
+  if (text === view.state.doc.toString()) return;
+  await loadQuery(text, 'Opened the shared query · ⌘Z brings back yours', { format: false });
+}
+addEventListener('hashchange', openShared);
 
 const statSummary = document.getElementById('stat-summary');
 const statLint = document.getElementById('stat-lint');
@@ -219,10 +307,14 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
       return;
     }
     if (!text.trim()) { toast('Clipboard is empty', 'error'); return; }
-    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, userEvent: 'input.replace' });
-    await formatDoc(view, { quiet: true, note: 'Pasted & formatted · ⌘Z to see the original' });
-    setOriginal(view.state.doc.toString());
-    view.focus();
+    await loadQuery(text, 'Pasted & formatted · ⌘Z to see the original', { format: true });
+  }
+  if (act === 'open') openFile();
+  if (act === 'save') saveFile();
+  if (act === 'share') shareLink();
+  if (act === 'preview') {
+    const n = cteAt(analyzeDoc(view.state.doc), view.state.selection.main.head);
+    if (n) previewCte(n.id); else toast('Put the cursor inside a CTE (or on its name) to preview it');
   }
   if (act === 'sample') {
     let s = SAMPLE_SQL;
@@ -300,6 +392,17 @@ function applyTheme() {
   themeMenu.querySelectorAll('[data-theme-id]').forEach((el) => {
     el.setAttribute('aria-checked', String(el.dataset.themeId === pref));
   });
+  paintFavicon();
+}
+// The favicon is the toolbar logo in the active theme's accent (logo.svg is the
+// Paper version, used until this runs).
+const favicon = document.querySelector('link[rel="icon"]');
+function paintFavicon() {
+  const css = getComputedStyle(document.documentElement);
+  const bg = css.getPropertyValue('--accent').trim();
+  const fg = css.getPropertyValue('--on-accent').trim();
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="${bg}"/><path d="M22.5 14.5A8 8 0 1 0 20.16 20.16L24.5 24.5" fill="none" stroke="${fg}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="24.5" cy="24.5" r="2.5" fill="${fg}"/></svg>`;
+  favicon.href = 'data:image/svg+xml,' + encodeURIComponent(svg);
 }
 
 // The ⋯ menu: occasional editor actions, the format-on-paste setting and the theme.
@@ -308,7 +411,9 @@ const menuItem = (id, name, note, sw) => `<button class="tm-item" role="menuitem
   ${sw}<span class="tm-text"><b>${name}</b><small>${note}</small></span><span class="tm-check">✓</span></button>`;
 const actItem = (act, name, key = '') => `<button class="tm-item tm-act" role="menuitem" data-act="${act}"><span class="tm-text"><b>${name}</b></span>${key ? `<kbd>${key}</kbd>` : ''}</button>`;
 themeMenu.innerHTML =
-  actItem('paste', 'Paste &amp; format', '⌘A ⌘V') + actItem('sample', 'Load sample query') + actItem('clear', 'Clear editor') +
+  actItem('paste', 'Paste &amp; format', '⌘A ⌘V') + actItem('open', 'Open .sql file…', '⌘O') + actItem('save', 'Save as .sql', '⌘⇧S') +
+  actItem('preview', 'Copy preview of this CTE', '⌘⌥↵') +
+  '<div class="tm-sep"></div>' + actItem('sample', 'Load sample query') + actItem('clear', 'Clear editor') +
   `<div class="tm-sep"></div><button class="tm-item tm-act" role="menuitemcheckbox" data-act="format-on-paste"><span class="tm-text"><b>Format on paste</b></span><span class="tm-check">✓</span></button>` +
   '<div class="tm-sep"></div><div class="tm-group">Theme</div>' +
   menuItem('system', 'Match system', 'Paper or Midnight', '<span class="tsw system"></span>') +
@@ -385,4 +490,5 @@ document.querySelectorAll('.gutter').forEach((g) => {
 refresh();
 syncHistoryButtons();
 view.focus();
+openShared();
 (window.requestIdleCallback ?? setTimeout)(() => { loadFormat(); loadDiff(); });

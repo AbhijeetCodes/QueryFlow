@@ -31,6 +31,9 @@ npm run build    # static site in dist/ (relative paths via base: './')
   params, filter values, date windows and lint diagnostics. Everything else reads from it.
 - `src/shape.js`: per-step summary (filters, aggregates, dedupe, windows)
 - `src/scope.js`: alias → FROM item at a position; CTE columns for autocomplete
+- `src/symbols.js`: `symbolAt(analysis, pos)` (CTE / table / alias / variable / param and its uses),
+  rename edits, CTE preview SQL. `src/symbol-ui.js` puts it in the editor (hover, F12, ⇧F12, F2).
+- `src/share.js`: share links (query deflated into the URL `#hash`, never sent to the host)
 - `src/format.js`: sqlfluff-style formatting on top of `sql-formatter`
 - `src/editor.js`: CodeMirror 6 setup (dialect, marks, lint, folding, completions, sticky CTE header)
 - `src/vars-panel.js`, `src/graph-panel.js`, `src/steps-view.js`: right-hand panels

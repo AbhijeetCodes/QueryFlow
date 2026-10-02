@@ -239,6 +239,10 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--chip); pad
 .editor-bar .spacer { flex: 1; }
 .editor-bar .btn { height: 26px; padding: 0 10px; font-size: 12.5px; }
 .brand { display: inline-flex; align-items: center; gap: 7px; margin-right: 6px; color: var(--accent); white-space: nowrap; user-select: none; }
+/* The logo takes the theme's accent; main.js redraws the favicon to match. */
+.logo-tile { fill: var(--accent); }
+.logo-q { fill: none; stroke: var(--on-accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.logo-node { fill: var(--on-accent); }
 .brand-name { color: var(--text); font-weight: 650; font-size: 13px; }
 .dialect { font-size: 10.5px; font-weight: 500; color: var(--text-muted); background: var(--chip); padding: 1px 7px; border-radius: 10px; }
 .left { container-type: inline-size; }
@@ -366,6 +370,32 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--chip); pad
 .cm-lens-alias { color: var(--text) !important; font-style: italic; }
 .cm-lens-var { color: var(--syn-var) !important; background: var(--var-bg); border-radius: 3px; }
 .cm-lens-focus { background: var(--focus) !important; border-radius: 2px; box-shadow: 0 0 0 1px var(--focus); }
+/* Holding ⌘ / Ctrl: names that ⌘-click follows to their definition. */
+.cm-qf-mod .cm-lens-cte:hover, .cm-qf-mod .cm-lens-var:hover, .cm-qf-mod .cm-lens-alias:hover { text-decoration: underline; cursor: pointer; }
+
+/* Hover card over a name (symbol-ui.js). */
+.cm-tooltip.cm-tooltip-hover { box-shadow: 0 6px 20px -8px rgba(0, 0, 0, 0.3); }
+.cm-qf-hover { max-width: 420px; padding: 8px 10px; font: 12px/1.45 var(--sans); }
+.cm-qf-hover .h-head { display: flex; align-items: baseline; gap: 6px; margin-bottom: 3px; font-family: var(--mono); }
+.cm-qf-hover .h-head b { font-weight: 600; overflow-wrap: anywhere; }
+.cm-qf-hover .arrow { color: var(--text-faint); font-weight: 400; }
+.cm-qf-hover .h-kind { font: 600 10px var(--sans); text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 5px; border-radius: 4px; background: var(--chip); color: var(--text-muted); }
+.cm-qf-hover .h-kind.cte { color: var(--c-cte); }
+.cm-qf-hover .h-kind.table { color: var(--c-table); }
+.cm-qf-hover .h-kind.variable, .cm-qf-hover .h-kind.param, .cm-qf-hover .h-kind.cteParam { color: var(--syn-var); }
+.cm-qf-hover .h-line { color: var(--text-muted); overflow-wrap: anywhere; }
+.cm-qf-hover code { font: 11.5px var(--mono); color: var(--text); }
+.cm-qf-hover .warn { color: var(--warning); }
+.cm-qf-hover .h-acts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }
+.cm-qf-hover .h-acts button { height: 22px; padding: 0 7px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--text-muted); font: 11.5px var(--sans); cursor: pointer; }
+.cm-qf-hover .h-acts button:hover { color: var(--text); border-color: var(--border-strong); background: var(--chip); }
+
+/* F2 rename box. */
+.cm-qf-rename { position: absolute; z-index: 20; display: flex; flex-direction: column; gap: 3px; padding: 6px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 7px; box-shadow: 0 8px 24px -10px rgba(0, 0, 0, 0.4); }
+.cm-qf-rename input { width: 220px; height: 26px; padding: 0 7px; border: 1px solid var(--accent); border-radius: 5px; background: var(--editor-bg); color: var(--text); font: 13px var(--mono); outline: none; }
+.cm-qf-rename small { font: 11px var(--sans); color: var(--text-faint); }
+.cm-qf-rename.bad input { border-color: var(--error); }
+.cm-qf-rename.bad small { color: var(--error); }
 .cm-fold-marker { color: var(--text-faint); font-size: 11px; padding: 0 2px; cursor: pointer; }
 .cm-fold-marker:hover { color: var(--text); }
 /* Open-fold arrows only while the pointer is over the gutter; a folded block keeps its ▸. */

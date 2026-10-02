@@ -222,7 +222,7 @@ function lineageOf(id, nodes) {
   return set;
 }
 
-export function createGraphPanel(root, { view, onSelect }) {
+export function createGraphPanel(root, { view, onSelect, onPreview }) {
   root.innerHTML = `
     <div class="graph-head">
       <div class="tabs" role="tablist">
@@ -555,6 +555,7 @@ export function createGraphPanel(root, { view, onSelect }) {
     if (link) select(link.dataset.node, { jump: true });
     if (e.target.closest('[data-act="close"]')) select(null);
     if (e.target.closest('[data-act="isolate"]')) setIsolate(isolate === selected ? null : selected);
+    if (e.target.closest('[data-act="preview"]')) onPreview?.(selected);
     const win = e.target.closest('.win[data-from]');
     if (win) selectRange(+win.dataset.from, +win.dataset.to);
   });
@@ -633,6 +634,7 @@ export function createGraphPanel(root, { view, onSelect }) {
       <div class="detail-head">
         <span class="kind ${n.kind}">${KIND_LABEL[n.kind] || n.kind}</span>
         <b>${esc(n.label)}</b>
+        ${n.kind === 'cte' ? '<button class="mini" data-act="preview" title="Copy WITH … SELECT * FROM this CTE LIMIT 100, to run in BigQuery (⌘⌥Enter in the editor)">Copy preview</button>' : ''}
         <button class="mini" data-act="isolate" title="Show only what feeds this step and what it feeds (or double-click a node)">${isolate === n.id ? 'Show all' : 'Focus lineage'}</button>
         <button class="icon-btn" data-act="close" title="Close">×</button>
       </div>

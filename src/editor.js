@@ -11,6 +11,7 @@ import { sql, SQLDialect, keywordCompletionSource } from '@codemirror/lang-sql';
 import { tags as t } from '@lezer/highlight';
 import { analyzeDoc } from './analyzer.js';
 import { scopeAt, columnsOf } from './scope.js';
+import { symbolFeatures } from './symbol-ui.js';
 
 const escHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -267,7 +268,7 @@ function lensCompletions(ctx) {
 const keywords = keywordCompletionSource(bigQueryDialect, true);
 const keywordsNotAfterDot = (ctx) => (ctx.matchBefore(/\.\w*$/) ? null : keywords(ctx));
 
-export function createEditor(parent, { doc, onDocChange, onPaste, onSelection, extraKeys = [] }) {
+export function createEditor(parent, { doc, onDocChange, onPaste, onSelection, extraKeys = [], extensions = [], toast, onPreview }) {
   const lang = sql({ dialect: bigQueryDialect, upperCaseKeywords: true });
   const state = EditorState.create({
     doc,
@@ -303,6 +304,8 @@ export function createEditor(parent, { doc, onDocChange, onPaste, onSelection, e
       lintGutter(),
       theme,
       EditorState.tabSize.of(2),
+      symbolFeatures({ setFocusRanges, toast, onPreview }),
+      extensions,
       keymap.of([
         ...extraKeys,
         ...closeBracketsKeymap,

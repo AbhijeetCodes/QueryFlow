@@ -7,7 +7,7 @@
 
 import { tokenize, stringInner, unquoteIdent } from './tokenizer.js';
 
-const RESERVED = new Set(`ALL AND ANY ARRAY AS ASC ASSERT_ROWS_MODIFIED AT BETWEEN BY CASE CAST
+export const RESERVED = new Set(`ALL AND ANY ARRAY AS ASC ASSERT_ROWS_MODIFIED AT BETWEEN BY CASE CAST
 COLLATE CONTAINS CREATE CROSS CUBE CURRENT DEFAULT DEFINE DESC DISTINCT ELSE END ENUM ESCAPE
 EXCEPT EXCLUDE EXISTS EXTRACT FALSE FETCH FOLLOWING FOR FROM FULL GROUP GROUPING GROUPS HASH
 HAVING IF IGNORE IN INNER INTERSECT INTERVAL INTO IS JOIN LATERAL LEFT LIKE LIMIT LOOKUP MERGE
@@ -416,6 +416,7 @@ export function analyze(src) {
 
       if (aliasTok) {
         item.alias = unquoteIdent(aliasTok.s);
+        item.aliasAt = { from: aliasTok.a, to: aliasTok.b };
         if (item.kind === 'subquery') {
           nodes.get(item.nodeId).label = item.alias;
           nodes.get(item.nodeId).sub = 'subquery';
@@ -1371,8 +1372,10 @@ export function analyze(src) {
       const lineEnd = src.indexOf('\n', T[it.y - 1].b);
       const tail = src.slice(T[it.y - 1].b, lineEnd < 0 ? src.length : lineEnd);
       const cm = /^\s*,?\s*(?:--|#)\s*(.+)$/.exec(tail);
+      const last = T[it.y - 1];
+      const nameAt = last.t === 'ident' && last.s.toLowerCase() === lower ? { from: last.a, to: last.b } : null;
       cteParams.push({ cte: n.id, cteLabel: n.label, name: it.alias, edit, value: src.slice(edit.from, edit.to),
-        def: { from: T[x].a, to: T[it.y - 1].b }, refs, note: cm ? cm[1].trim() : '' });
+        def: { from: T[x].a, to: T[it.y - 1].b }, nameAt, refs, note: cm ? cm[1].trim() : '' });
     }
   }
 
@@ -1654,6 +1657,13 @@ export function analyze(src) {
     cteParams,
     dates,
     insertDeclareAt: lastDeclareEnd,
+    // Script statements, ';' included. kind: declare | set | function (CREATE TEMP FUNCTION) | other
+    statements: stmts.filter(([s, e]) => s < e).map(([s, e]) => ({
+      from: T[s].a,
+      to: (T[e] ?? T[e - 1]).b,
+      kind: up(s) === 'DECLARE' ? 'declare' : up(s) === 'SET' ? 'set'
+        : up(s) === 'CREATE' && T.slice(s + 1, Math.min(e, s + 6)).some((t) => t.u === 'FUNCTION') ? 'function' : 'other',
+    })),
     graph: { nodes: nodeList, edges: edgeList },
     diags,
     marks,

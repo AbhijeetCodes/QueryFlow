@@ -495,9 +495,9 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
     const tab = e.target.closest('.tab');
     if (tab) showTab(tab.dataset.tab);
   });
-  let startTab = 'steps';
-  try { startTab = localStorage.getItem('queryflow.tab') || 'steps'; } catch { /* ignore */ }
-  showTab(['steps', 'graph', 'tables', 'run'].includes(startTab) ? startTab : 'steps');
+  let startTab = 'graph';
+  try { startTab = localStorage.getItem('queryflow.tab') || 'graph'; } catch { /* ignore */ }
+  showTab(['steps', 'graph', 'tables', 'run'].includes(startTab) ? startTab : 'graph');
 
   vp.addEventListener('click', (e) => {
     const n = e.target.closest('.node');

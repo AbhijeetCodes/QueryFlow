@@ -9,27 +9,20 @@ test('sample: graph, variables, literals, lint', () => {
   const r = analyze(SAMPLE_SQL);
   const ids = r.graph.nodes.map((n) => n.id).sort();
   assert.deepEqual(ids, [
-    'cte:listings', 'cte:old_cohort', 'cte:orders', 'cte:seller_orders', 'cte:sellers', 'result:1',
-    'tbl:analytics-prod.core.categories', 'tbl:analytics-prod.core.users',
-    'tbl:analytics-prod.marketplace.listings', 'tbl:analytics-prod.marketplace.orders',
-    'tbl:analytics-prod.trust.banned_users',
+    'cte:legendaries', 'cte:ranked', 'cte:stats', 'cte:team', 'result:1',
+    'tbl:pokedex.pokemon', 'tbl:pokedex.teams', 'tbl:pokedex.trainers',
   ]);
-  const e = r.graph.edges.find((e) => e.from === 'cte:orders' && e.to === 'cte:seller_orders');
-  assert.equal(e.joins[0].joinType, 'LEFT');
-  assert.deepEqual(e.joins[0].keys, [{ left: 'o.listing_id', right: 'l.listing_id' }]);
+  const e = r.graph.edges.find((e) => e.from === 'cte:stats' && e.to === 'cte:ranked');
+  assert.equal(e.joins[0].joinType, 'INNER');
+  assert.deepEqual(e.joins[0].keys, [{ left: 's.pokemon_id', right: 't.pokemon_id' }]);
   assert.deepEqual(r.variables.map((v) => [v.names[0], v.value, v.refs.length]), [
-    ['start_date', '2024-01-01', 1], ['end_date', '2024-03-31', 1], ['min_orders', '3', 1],
+    ['caught_since', '2024-01-01', 1], ['min_level', '20', 1],
   ]);
-  assert.deepEqual(r.params.map((p) => p.name), ['country']);
   const lit = Object.fromEntries(r.literals.map((g) => [g.key, g]));
-  assert.equal(lit['s:2024-01-01'].sameAsVar, 'start_date');
-  assert.ok(lit['s:SG']);
-  assert.ok(lit['n:90|INTERVAL · DAY']);
+  assert.ok(lit['s:Kanto'] && lit['s:Johto']);
   const msgs = r.diags.map((d) => d.message);
-  assert.ok(msgs.some((m) => m.includes('old_cohort') && m.includes('never used')));
-  assert.ok(msgs.some((m) => m.startsWith('ORDER BY inside a CTE')));
+  assert.ok(msgs.some((m) => m.includes('legendaries') && m.includes('never used')));
   assert.ok(msgs.some((m) => m.startsWith('SELECT *')));
-  assert.ok(msgs.some((m) => m.startsWith('NOT IN')));
 });
 
 test('lint rules', () => {

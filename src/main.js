@@ -6,7 +6,6 @@ import { createEditor, setEditorDialect } from './editor.js';
 import { analyzeDoc } from './analyzer.js';
 import { createVarsPanel } from './vars-panel.js';
 import { createGraphPanel } from './graph-panel.js';
-import { SAMPLES } from './sample.js';
 import { DIALECTS, dialectOf, currentDialect, setCurrentDialect, detectDialect } from './dialect.js';
 import { diffLines, diffStats } from './diff.js';
 import { previewSql, cteAt } from './symbols.js';
@@ -92,9 +91,30 @@ function copyAll(view) {
 let formatOnPaste = store.get('formatOnPaste', '1') === '1';
 let detectOnPaste = store.get('detectDialect', '1') === '1';
 let reviewBeforeCopy = store.get('reviewBeforeCopy', '1') === '1';
-const saved = store.get('doc', null);
-let initial = saved ?? SAMPLES[currentDialect()];
-if (saved === null) { try { initial = await formatSql(initial); } catch { /* keep raw */ } }
+// A first visit starts empty; the example loads only from the card below or the ⋯ menu.
+const initial = store.get('doc', '');
+
+// What an empty editor shows: how to start, and the example query with its test tables.
+const pasteKey = matchMedia('(hover: none)').matches ? '' : /Mac|iPhone|iPad/.test(navigator.platform || '') ? ' (⌘V)' : ' (Ctrl+V)';
+const emptyEl = document.createElement('div');
+emptyEl.className = 'editor-empty';
+emptyEl.innerHTML = `<div class="ee-card">
+  <b>Paste a query to start</b>
+  <p>Paste one here${pasteKey} and it is tidied up for you, or open a .sql file.</p>
+  <div class="ee-acts">
+    <button class="btn primary sm" data-act="sample">Load the example</button>
+    <button class="btn sm" data-act="open">Open .sql file…</button>
+  </div>
+  <small>The example is a short query on a made-up Pokédex, with 3 test tables to run it on in the Run tab.</small>
+</div>`;
+document.getElementById('editor').append(emptyEl);
+emptyEl.addEventListener('click', (e) => {
+  const act = e.target.closest('[data-act]')?.dataset.act;
+  if (act === 'sample') loadSample();
+  else if (act === 'open') openFile();
+  else view.focus();
+});
+const syncEmpty = () => { emptyEl.hidden = view.state.doc.length > 0; };
 
 let refreshTimer;
 let saveTimer;
@@ -122,6 +142,7 @@ const view = createEditor(document.getElementById('editor'), {
   toast,
   onPreview: (id) => previewCte(id),
   onDocChange: () => {
+    syncEmpty();
     syncHistoryButtons();
     clearTimeout(refreshTimer);
     refreshTimer = setTimeout(refresh, 120);
@@ -145,6 +166,7 @@ const view = createEditor(document.getElementById('editor'), {
   },
 });
 
+syncEmpty();
 view.dom.addEventListener('keyup', updateCursor);
 view.dom.addEventListener('click', updateCursor);
 
@@ -397,7 +419,7 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
 
 // ---- dialect -------------------------------------------------------------------
 // The picker in the toolbar. Switching re-reads the same text; an untouched
-// sample query is swapped for the new dialect's sample.
+// example query is swapped for the new dialect's example.
 // An in-app menu (like the ⋯ menu) rather than the browser's native <select> popup.
 const DIALECT_NOTES = {
   bigquery: '`proj.ds.t`, DECLARE, @params',
@@ -443,11 +465,21 @@ document.addEventListener('pointerdown', (e) => {
 });
 paintDialect();
 
-async function loadSample() {
+// The example query (src/sample.js, loaded on first use) and its test tables in the Run tab.
+// One transaction, so ⌘Z brings back what was there.
+async function loadSample({ quiet = false } = {}) {
+  const { SAMPLES, SAMPLE_TABLES } = await import('./sample.js');
   let s = SAMPLES[currentDialect()];
   try { s = await formatSql(s); } catch { /* raw */ }
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: s } });
+  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: s }, userEvent: 'input.replace' });
   setOriginal(s);
+  view.focus();
+  const tables = (await loadRun()).loadTables(SAMPLE_TABLES, 'practice data');
+  if (quiet) return;
+  const n = Object.keys(SAMPLE_TABLES).length;
+  toast(!tables ? 'Loaded the example query · ⌘Z to undo'
+    : isBigQuery() ? `Loaded the example and its ${n} test tables · ⌘Enter runs it`
+      : `Loaded the example and its ${n} test tables · running them needs BigQuery`);
 }
 
 // `quiet`: the caller loads its own text and says what happened (no sample swap, no toast).
@@ -457,14 +489,19 @@ async function setDialect(id, { quiet = false } = {}) {
   const doc = view.state.doc.toString();
   let wasSample = false;
   if (!quiet) {
-    try { wasSample = doc === SAMPLES[old] || doc === await formatSql(SAMPLES[old], old); } catch { /* not the sample */ }
+    if (doc.trim()) {
+      try {
+        const { SAMPLES } = await import('./sample.js');
+        wasSample = doc === SAMPLES[old] || doc === await formatSql(SAMPLES[old], old);
+      } catch { /* not the sample */ }
+    }
   }
   store.set('dialect', id);
   paintDialect(id);
   setEditorDialect(view, id);
-  if (wasSample) await loadSample();
+  if (wasSample) await loadSample({ quiet: true });
   refresh();
-  if (!quiet) toast(wasSample ? `Loaded the ${engine()} sample query` : `Reading the query as ${engine()}`);
+  if (!quiet) toast(wasSample ? `Loaded the ${engine()} example` : `Reading the query as ${engine()}`);
 }
 
 // A whole query pasted or opened that clearly reads as another dialect switches to it
@@ -560,7 +597,7 @@ themeMenu.innerHTML =
   actItem('paste', 'Paste &amp; format', '⌘A ⌘V') + actItem('open', 'Open .sql file…', '⌘O') + actItem('save', 'Save as .sql', '⌘⇧S') +
   actItem('preview', 'Copy preview of this CTE', '⌘⌥↵') +
   actItem('run', 'Run on test data', '⌘↵') +
-  '<div class="tm-sep"></div>' + actItem('sample', 'Load sample query') + actItem('clear', 'Clear editor') +
+  '<div class="tm-sep"></div>' + actItem('sample', 'Load the example (Pokédex)') + actItem('clear', 'Clear editor') +
   `<div class="tm-sep"></div><button class="tm-item tm-act" role="menuitemcheckbox" data-act="format-on-paste"><span class="tm-text"><b>Format on paste</b></span><span class="tm-check">✓</span></button>` +
   `<button class="tm-item tm-act" role="menuitemcheckbox" data-act="detect-dialect"><span class="tm-text"><b>Detect dialect on paste</b></span><span class="tm-check">✓</span></button>` +
   '<div class="tm-sep"></div><div class="tm-group">Theme</div>' +

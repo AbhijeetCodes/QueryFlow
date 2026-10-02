@@ -301,15 +301,27 @@ test('every practice query runs on the practice database', async () => {
   for (const q of PRACTICE_QUERIES) {
     res[q.title] = objs(await run(q.sql, PRACTICE_TABLES));
   }
-  assert.equal(res['Look at a table'].length, 12);
-  assert.equal(res['Look at a table'][10].city, null); // Kim Le has no city
-  assert.deepEqual(res['Filter and sort'].map((r) => r.name), ['Ana Lim', 'Chloe Ng', 'Grace Ho', 'Leo Wong']);
-  assert.deepEqual(res['Count per group'][0], { status: 'delivered', orders: 16 });
-  assert.deepEqual(res['Join tables'].slice(0, 2).map((r) => [r.name, r.revenue]), [['Ana Lim', 490.7], ['Eva Cruz', 474.5]]);
-  assert.deepEqual(res['Who never ordered (LEFT JOIN)'].map((r) => r.name), ['Leo Wong']);
-  assert.deepEqual(res['Revenue per month'].map((r) => [r.month, r.revenue]).slice(0, 2), [[day('2024-01-01'), 150.9], [day('2024-02-01'), 516]]);
-  assert.deepEqual(res['Best seller per category (CTEs)'].map((r) => [r.category, r.name, r.units]), [
-    ['Accessories', 'Backpack', 10], ['Electronics', 'Mechanical Keyboard', 15], ['Home', 'Coffee Mug', 9], ['Stationery', 'Gel Pens 5-pack', 12],
+  assert.equal(res['Look at a table'].length, 15);
+  assert.equal(res['Look at a table'][9].is_legendary, true); // Mewtwo
+  assert.deepEqual(res['Filter and sort'].slice(0, 5).map((r) => r.name), ['Mewtwo', 'Gengar', 'Charizard', 'Mew', 'Pikachu']);
+  assert.deepEqual(res['Count per group'].slice(0, 2), [{ type: 'Psychic', pokemon: 3 }, { type: 'Water', pokemon: 3 }]);
+  assert.deepEqual(res['Join tables'].map((r) => [r.trainer, r.team_size, r.top_level, r.team_stats]), [
+    ['Ash', 4, 70, 1184], ['May', 2, 70, 836], ['Lyra', 3, 55, 831], ['Brock', 2, 40, 660], ['Misty', 2, 45, 555],
+  ]);
+  assert.deepEqual(res['Not on any team (LEFT JOIN)'].map((r) => r.name).sort(), ['Eevee', 'Mew']);
+  assert.deepEqual(res['Catches per month'].map((r) => r.catches), [1, 2, 3, 2, 2, 2, 1]);
+  assert.deepEqual(res['Catches per month'][0].month, day('2023-11-01'));
+  assert.deepEqual(res['Strongest of each type (CTEs)'].slice(0, 3).map((r) => [r.type, r.name, r.total_stats]), [
+    ['Psychic', 'Lugia', 436], ['Rock', 'Tyranitar', 405], ['Dragon', 'Dragonite', 400],
+  ]);
+});
+
+test('the example query runs on its test tables', async () => {
+  const { SAMPLE_SQL, SAMPLE_TABLES } = await import('../src/sample.js');
+  for (const text of Object.values(SAMPLE_TABLES)) assert.equal(inspectTable(text).error, undefined);
+  // Each Kanto / Johto trainer's best non-legendary catch since 2024 at level 20 or more.
+  assert.deepEqual(objs(await run(SAMPLE_SQL, SAMPLE_TABLES)).map((r) => [r.trainer, r.pokemon, r.total_stats]), [
+    ['Lyra', 'Tyranitar', 405], ['Misty', 'Lapras', 355], ['Ash', 'Charizard', 340], ['Brock', 'Gengar', 295],
   ]);
 });
 

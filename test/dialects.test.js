@@ -121,14 +121,13 @@ test('samples: each dialect formats idempotently and reads the same shape', () =
     const out = formatSql(SAMPLES[d], d);
     assert.equal(formatSql(out, d), out, d);
     const a = analyze(out, d);
-    assert.equal(a.stats.ctes, d === 'postgres' ? 6 : 5, d);
-    assert.equal(a.stats.tables, 5, d);
+    assert.equal(a.stats.ctes, d === 'postgres' ? 5 : 4, d);
+    assert.equal(a.stats.tables, 3, d);
     assert.ok(!a.diags.some((x) => x.severity === 'error'), `${d}: ${msgs(a)}`);
   }
   const pg = formatSql(SAMPLES.postgres, 'postgres');
-  assert.match(pg, /SELECT DISTINCT ON \(o\.listing_id\)\n {4}o\.order_id,/);
-  assert.match(pg, /CURRENT_DATE - INTERVAL '90 days'/);
-  assert.match(formatSql(SAMPLES.mysql, 'mysql'), /^SET @start_date = '2024-01-01';\nSET @end_date/m);
+  assert.match(pg, /SELECT DISTINCT ON \(tr\.trainer_id\)\n {4}tr\.name AS trainer,/);
+  assert.match(formatSql(SAMPLES.mysql, 'mysql'), /^SET @caught_since = '2024-01-01';\nSET @min_level = 20;/m);
 });
 
 test('table names are quoted the way each dialect writes them', () => {

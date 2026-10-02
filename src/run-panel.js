@@ -89,7 +89,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       <button class="btn primary sm run-go" title="Run on the test tables (⌘Enter)">Run</button>
       <span class="run-status" aria-live="polite"></span>
       <div class="rp-pick">
-        <button class="mini rp-btn" aria-haspopup="menu" aria-expanded="false" title="A small made-up shop database, with example queries to learn SQL on">Practice ▾</button>
+        <button class="mini rp-btn" aria-haspopup="menu" aria-expanded="false" title="A small made-up Pokédex database, with example queries to learn SQL on">Practice ▾</button>
         <div class="rp-menu" role="menu" aria-label="Practice" hidden></div>
       </div>
     </div>
@@ -632,12 +632,12 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     let html;
     const practice = practiceLoaded();
     if (practice && (!analysis.src.trim() || !tables.length)) {
-      html = `<h3>Practice database: a small shop</h3>
-        <p>${esc(PRACTICE_NOTE)} Pick an example to load and run it, or write your own query, e.g. <code>SELECT * FROM shop.orders</code>.</p>
+      html = `<h3>Practice database: a small Pokédex</h3>
+        <p>${esc(PRACTICE_NOTE)} Pick an example to load and run it, or write your own query, e.g. <code>SELECT * FROM pokedex.trainers</code>.</p>
         ${examplesHtml()}`;
     } else if (!analysis.src.trim() || (!tables.length && !saved.length)) {
       html = `<h3>Practise SQL on a small database</h3>
-        <p>Load a made-up shop (customers, products, orders and order items) and try example queries on it, from <code>SELECT *</code> to joins and CTEs. Or make tables of your own. It all runs here in your browser.</p>
+        <p>Load a made-up Pokédex (Pokémon, trainers and their teams) and try example queries on it, from <code>SELECT *</code> to joins and CTEs. Or make tables of your own. It all runs here in your browser.</p>
         <div class="res-idle-acts">
           <button class="btn primary sm" data-act="practice">Load the practice database</button>
           <button class="btn sm" data-act="new">+ Create or upload table</button>
@@ -674,19 +674,23 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   const examplesHtml = () => `<ol class="res-examples">${PRACTICE_QUERIES.map((q, i) =>
     `<li><button class="link" data-act="example" data-i="${i}">${esc(q.title)}</button></li>`).join('')}</ol>`;
 
-  // Writes the shop tables, asking before replacing edited ones. Returns false when declined.
-  function loadPractice({ quiet = false } = {}) {
-    const changed = PRACTICE_KEYS.filter((k) => store.tables[k]?.trim() && store.tables[k] !== PRACTICE_TABLES[k]);
-    if (changed.length && !confirm(`Reset ${changed.join(', ')} to the practice data? Your edits to ${changed.length === 1 ? 'it' : 'them'} are replaced.`)) return false;
-    for (const k of PRACTICE_KEYS) {
-      store.tables[k] = PRACTICE_TABLES[k];
+  // Writes the practice tables (for the Practice menu or the editor's example), asking
+  // before replacing edited ones. Returns false when declined.
+  function loadTables(tables, what) {
+    const keys = Object.keys(tables);
+    const changed = keys.filter((k) => store.tables[k]?.trim() && store.tables[k] !== tables[k]);
+    if (changed.length && !confirm(`Reset ${changed.join(', ')} to the ${what}? Your edits to ${changed.length === 1 ? 'it' : 'them'} are replaced.`)) return false;
+    for (const k of keys) {
+      store.tables[k] = tables[k];
       const el = cards.get(k);
-      if (el) { el.querySelector('textarea').value = PRACTICE_TABLES[k]; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
+      if (el) { el.querySelector('textarea').value = tables[k]; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
     }
     save();
-    renderTables(analysis);
-    renderChips();
-    if (!resultShown) renderIdle();
+    if (analysis) { renderTables(analysis); renderChips(); if (!resultShown) renderIdle(); }
+    return true;
+  }
+  function loadPractice({ quiet = false } = {}) {
+    if (!loadTables(PRACTICE_TABLES, 'practice data')) return false;
     if (!quiet) toast(`Loaded the practice database: ${PRACTICE_KEYS.join(', ')}`);
     return true;
   }
@@ -1000,5 +1004,5 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (!resultShown) renderIdle();
   }
 
-  return { update, run, openTables };
+  return { update, run, openTables, loadTables };
 }

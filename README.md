@@ -52,6 +52,14 @@ GitHub Pages site open there for anyone.
 
 All of them, and GitHub Pages, can also serve a custom domain you own.
 
+## The example
+
+The editor starts empty. Its *Load the example* button (also in the ⋯ menu) puts in a short
+query on a made-up Pokédex, each trainer's strongest Pokémon, and adds its three test tables
+(`pokedex.pokemon`, `pokedex.trainers`, `pokedex.teams`, the practice database) to the Run tab. It has something for
+each feature: two variables, filter values, a date window, joins, a `ROW_NUMBER` dedupe and two
+lint warnings. ⌘Z brings back what was in the editor.
+
 ## Layout
 
 | Left | Right top | Right bottom |
@@ -72,7 +80,7 @@ highlighted, formatted and checked; the graph, steps, rename and previews work t
 | Also understood | `QUALIFY`, `UNNEST`, `FOR SYSTEM_TIME AS OF` | `::` casts, `$$` strings, `DISTINCT ON` (a dedupe), `LATERAL`, `CURRENT_DATE - INTERVAL '7 days'` | `#` comments, `:=`, `DATE_SUB(CURDATE(), INTERVAL 7 DAY)`, `CREATE TABLE t SELECT …` |
 | BigQuery-only lint | `UNION` needs ALL / DISTINCT, DECLARE first, `SELECT *` billing, legacy `[p:d.t]`, variable shadowed by a column | – | – |
 
-Switching dialect re-reads the same text; an untouched sample query is swapped for that dialect's sample.
+Switching dialect re-reads the same text; an untouched example query is swapped for that dialect's example.
 
 **Detect dialect on paste** (on by default, in the ⋯ menu): pasting or opening a whole query that
 clearly belongs to another dialect switches to it, and the toast says why (`:: casts`,
@@ -113,9 +121,10 @@ what's missing, and **Fill with starter rows** puts made-up rows in every empty 
 With an empty editor it shows how to start: create a table, then write a query on it.
 
 **Practice database.** For learning SQL, *Practice ▾* (top right of the Run tab, or *Load the
-practice database* on an empty editor) loads a small made-up shop: `shop.customers`,
-`shop.products`, `shop.orders` and `shop.order_items`. Seven example queries go from `SELECT *`
-through filters, `GROUP BY`, joins, `LEFT JOIN`, dates and CTEs with a window function. Picking
+practice database* on an empty editor) loads a small made-up Pokédex: `pokedex.pokemon`,
+`pokedex.trainers` and `pokedex.teams`, the same tables the editor's example reads. Seven
+example queries go from `SELECT *` through filters, `GROUP BY`, joins, `LEFT JOIN`, dates and
+CTEs with a window function. Picking
 one puts it in the editor (⌘Z brings your query back), switches to BigQuery and runs it. The
 tables are ordinary saved test tables, so they can be edited, and *Reset the practice tables*
 puts them back.
@@ -208,5 +217,6 @@ In Chrome on Windows and Linux, F12 opens the developer tools; use Ctrl-click or
 | `src/runner.js`, `src/engine.js` | A test run (load tables, run statements, cap rows) and the DuckDB-WASM driver |
 | `src/xlsx.js` | Reads `.xlsx` workbooks into CSV (zip via the browser's `DecompressionStream`; loaded on first use) |
 | `src/run-panel.js` | Run tab |
-| `src/practice.js` | The practice database (a made-up shop) and its example queries |
+| `src/practice.js` | The practice database (a made-up Pokédex) and its example queries |
+| `src/sample.js` | The editor's example: a Pokédex query per dialect, on the practice tables (loaded on first use) |
 | `src/main.js` | Wires it together: toolbar, status bar, theme, panes, files, share links |

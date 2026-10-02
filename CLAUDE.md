@@ -47,6 +47,8 @@ npm run build    # static site in dist/ (relative paths via base: './')
 - `src/editor.js`: CodeMirror 6 setup (dialect, marks, lint, folding, completions, sticky CTE header)
 - `src/vars-panel.js`, `src/graph-panel.js`, `src/steps-view.js`: right-hand panels
 - `src/diff.js`, `src/diff-view.js`: review-before-copy diff
+- `src/sample.js`: the example (a short Pokédex query per dialect, on the practice tables). The editor
+  starts empty; this loads only from *Load the example* (the empty editor's card or the ⋯ menu).
 - `src/main.js`: wiring (toolbar, status bar, themes, resizable panes)
 - Run tab (all lazy-loaded): `src/bq2duck.js` translates BigQuery to DuckDB token by token
   (keeps line numbers; points table names at test tables); `src/testdata.js` parses the CSV / TSV

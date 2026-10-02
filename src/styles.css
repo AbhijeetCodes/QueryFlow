@@ -344,7 +344,18 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--chip); pad
   min-height: 0;
 }
 .left { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--editor-bg); }
-.editor-wrap { flex: 1; min-height: 0; }
+.editor-wrap { flex: 1; min-height: 0; position: relative; }
+/* An empty editor: how to start, and the example (src/main.js). Clicks around the card reach the editor. */
+.editor-empty { position: absolute; inset: 0; z-index: 5; display: flex; justify-content: center; align-items: flex-start; padding: 12vh 16px 0; pointer-events: none; }
+.ee-card {
+  pointer-events: auto; width: 380px; max-width: 100%; padding: 16px 18px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--border); box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.25);
+  font-size: 12.5px; line-height: 1.45; color: var(--text-muted);
+}
+.ee-card b { display: block; font-size: 14px; font-weight: 650; color: var(--text); }
+.ee-card p { margin: 4px 0 12px; }
+.ee-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.ee-card small { display: block; margin-top: 10px; font-size: 11.5px; color: var(--text-faint); }
 .editor-wrap .cm-editor { height: 100%; }
 .editor-wrap .cm-editor.cm-focused { outline: none; }
 .right {

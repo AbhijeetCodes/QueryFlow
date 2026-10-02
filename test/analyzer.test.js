@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { analyze } from '../src/analyzer.js';
 import { SAMPLE_SQL } from '../src/sample.js';
 import { formatSql } from '../src/format.js';
+import { describeWindow } from '../src/shape.js';
 
 test('sample: graph, variables, literals, lint', () => {
   const r = analyze(SAMPLE_SQL);
@@ -199,4 +200,32 @@ test('fan-out: a join on part of a CTE grain, added up by a SUM', () => {
   assert.deepEqual(m(daily + 'select sum(o.amount) from o join d on o.user_id = d.user_id and o.day = d.day'), []);
   assert.deepEqual(m(daily + "select sum(o.amount) from o join d on o.user_id = d.user_id and d.day = date '2024-01-01'"), []);
   assert.deepEqual(m(daily + 'select o.* from o join d on o.user_id = d.user_id'), []); // one-to-many on purpose
+});
+
+test('window functions: args, keys, frames, named windows, plain-words kind', () => {
+  const r = analyze(`SELECT
+  SUM(oi.price) OVER (PARTITION BY c.id ORDER BY o.day, o.id) AS running_spend,
+  DENSE_RANK() OVER (ORDER BY SUM(oi.price) OVER (PARTITION BY c.id) DESC NULLS LAST) AS spend_rank,
+  LAG(o.day, 2) OVER w AS prev_day,
+  AVG(oi.price) OVER (w ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS avg_7,
+  LAST_VALUE(o.id) OVER (PARTITION BY c.id ORDER BY o.day) AS last_id,
+  COUNT(*) OVER (PARTITION BY c.id) AS n
+FROM customers c JOIN orders o ON c.id = o.cid JOIN order_items oi ON o.id = oi.oid
+WINDOW w AS (PARTITION BY c.id ORDER BY o.day)`);
+  const ws = r.graph.nodes.find((n) => n.kind === 'result').shape.windows;
+  const by = Object.fromEntries(ws.map((w) => [w.alias, w]));
+  assert.equal(by.running_spend.args, 'oi.price');
+  assert.deepEqual(by.running_spend.orderKeys, [{ text: 'o.day', desc: false }, { text: 'o.id', desc: false }]);
+  assert.deepEqual(by.spend_rank.orderKeys, [{ text: 'SUM(oi.price) per c.id', desc: true }]);
+  assert.equal(by.prev_day.partition, 'c.id');
+  assert.equal(by.avg_7.partition, 'c.id');
+  assert.equal(by.avg_7.frame, 'ROWS BETWEEN 6 PRECEDING AND CURRENT ROW');
+  const kind = (a) => describeWindow(by[a]);
+  assert.deepEqual(ws.map((w) => describeWindow(w).kind), ['running', 'rank', 'offset', 'rolling', 'pick', 'total']);
+  assert.equal(kind('prev_day').what, 'o.day from 2 rows back');
+  assert.equal(kind('avg_7').label, 'rolling avg');
+  assert.equal(kind('last_id').notes.length, 1);
+  assert.ok(r.diags.some((d) => d.message.startsWith('LAST_VALUE with ORDER BY')));
+  // A frame size is not a hardcoded filter value.
+  assert.ok(!r.literals.some((g) => g.value === '6'));
 });

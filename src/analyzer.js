@@ -596,21 +596,64 @@ export function analyze(src) {
     return null;
   }
 
-  // Parse the window spec OVER ( PARTITION BY … ORDER BY … )
-  function readOver(open) {
+  // Text of [a, b) with any nested `OVER (…)` written as "per x" (window functions
+  // used as ORDER BY keys, like DENSE_RANK() OVER (ORDER BY SUM(v) OVER (PARTITION BY c))).
+  function keyText(a, b, max) {
+    let out = '';
+    let pos = a;
+    for (let k = a; k < b; k++) {
+      if (!is(k, 'OVER') || txt(k + 1) !== '(') continue;
+      const inner = readOver(k + 1);
+      out += slice(pos, k - 1) + (inner.partition ? ` per ${inner.partition}` : ' over all rows');
+      k = inner.close;
+      pos = k + 1;
+    }
+    return squash(out + slice(pos, b - 1), max);
+  }
+
+  // ORDER BY keys of a window: [{ text, desc }], NULLS FIRST / LAST dropped.
+  function orderKeys(a, b) {
+    return splitTop(a, b, depth[a], ',').map(([x, y]) => {
+      if (is(y - 2, 'NULLS')) y -= 2;
+      const desc = is(y - 1, 'DESC');
+      if (desc || is(y - 1, 'ASC')) y--;
+      return { text: keyText(x, y, 60), desc };
+    });
+  }
+
+  // WINDOW w AS (…), w2 AS (w ORDER BY …) of one SELECT: name → spec.
+  function readNamedWindows(a, b, sd) {
+    const named = new Map();
+    for (const [x, y] of splitTop(a, b, sd, ',')) {
+      if (is(x + 1, 'AS') && txt(x + 2) === '(' && closeOf(x + 2, y) < y) named.set(T[x].u, readOver(x + 2, named));
+    }
+    return named;
+  }
+
+  // Parse the window spec OVER ( [name] PARTITION BY … ORDER BY … [ROWS | RANGE …] ).
+  // A spec that starts with a named window inherits its parts.
+  function readOver(open, named) {
     const close = closeOf(open, N);
     const d = depth[open] + 1;
     let pb = -1;
     let ob = -1;
+    let fr = -1;
     for (let i = open + 1; i < close; i++) {
       if (depth[i] !== d) continue;
       if (is(i, 'PARTITION') && is(i + 1, 'BY')) pb = i + 2;
-      if (is(i, 'ORDER') && is(i + 1, 'BY')) ob = i + 2;
-      if (is(i, 'ROWS') || is(i, 'RANGE')) { if (ob >= 0 && i > ob) { /* frame */ } }
+      else if (is(i, 'ORDER') && is(i + 1, 'BY')) ob = i + 2;
+      else if ((is(i, 'ROWS') || is(i, 'RANGE')) && fr < 0) fr = i;
     }
-    const partition = pb >= 0 ? squash(slice(pb, (ob > pb ? ob - 2 : close) - 1), 60) : '';
-    const order = ob >= 0 ? squash(slice(ob, close - 1), 60) : '';
-    return { partition, order, close };
+    const base = (named && T[open + 1]?.t === 'ident' && named.get(T[open + 1].u)) || {};
+    const pEnd = ob > pb ? ob - 2 : fr > pb ? fr : close;
+    const oEnd = fr > ob ? fr : close;
+    return {
+      partition: pb >= 0 ? keyText(pb, pEnd, 60) : base.partition || '',
+      order: ob >= 0 ? squash(slice(ob, oEnd - 1), 60) : base.order || '',
+      orderKeys: ob >= 0 ? orderKeys(ob, oEnd) : base.orderKeys || [],
+      frame: fr >= 0 ? squash(slice(fr, close - 1), 70) : base.frame || '',
+      close,
+    };
   }
 
   function recordShape(owner, clauses, b, sd) {
@@ -622,6 +665,15 @@ export function analyze(src) {
     }
     let firstItems = null;
     if (clauses.some((c) => c.kw === 'FROM')) sh.hasFrom = true;
+    // The WINDOW clause comes after SELECT, so named windows are read on first use.
+    const namedByBranch = new Map();
+    const namedWindows = (branch) => {
+      if (!namedByBranch.has(branch)) {
+        const ci = clauses.findIndex((c) => c.kw === 'WINDOW' && c.branch === branch);
+        namedByBranch.set(branch, ci < 0 ? new Map() : readNamedWindows(clauses[ci].body, ci + 1 < clauses.length ? clauses[ci + 1].i : b, sd));
+      }
+      return namedByBranch.get(branch);
+    };
     clauses.forEach((c, ci) => {
       const end = ci + 1 < clauses.length ? clauses[ci + 1].i : b;
       const body = c.body;
@@ -646,9 +698,18 @@ export function analyze(src) {
             if (txt(i) === '*' && (i === it.x || txt(i - 1) === '.') && depth[i] === sd) sh.star = true;
             if (T[i].t !== 'ident' || txt(i + 1) !== '(' || txt(i - 1) === '.') continue;
             const close = closeOf(i + 1, it.y);
-            if (is(close + 1, 'OVER') && txt(close + 2) === '(') {
-              const w = readOver(close + 2);
-              sh.windows.push({ fn: T[i].u, alias: it.alias, partition: w.partition, order: w.order });
+            if (is(close + 1, 'OVER') && (txt(close + 2) === '(' || T[close + 2]?.t === 'ident')) {
+              const named = namedWindows(c.branch);
+              const w = txt(close + 2) === '('
+                ? readOver(close + 2, named)
+                : { ...(named.get(T[close + 2].u) || { partition: '', order: '', orderKeys: [], frame: '' }), close: close + 2 };
+              const args = keyText(i + 2, close, 50);
+              sh.windows.push({ fn: T[i].u, args, alias: it.alias, partition: w.partition, order: w.order,
+                orderKeys: w.orderKeys, frame: w.frame, text: squash(slice(i, w.close), 200), from: T[i].a, to: T[w.close].b });
+              if (T[i].u === 'LAST_VALUE' && w.orderKeys.length && !w.frame) {
+                diags.push({ from: T[i].a, to: T[close + 1].b, severity: 'warning',
+                  message: 'LAST_VALUE with ORDER BY and no frame returns the current row\'s value (the default frame ends at the current row). Add ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING.' });
+              }
               i = w.close;
             } else if (AGGREGATES.has(T[i].u)) {
               const fn = T[i].u + (is(i + 2, 'DISTINCT') ? ' DISTINCT' : '');
@@ -1038,6 +1099,8 @@ export function analyze(src) {
     if (!lit) continue;
     const pi = lit.i - 1;
     const nj = lit.j + 1;
+    // A window frame size (ROWS BETWEEN 6 PRECEDING …) is not a filter value.
+    if (is(nj, 'PRECEDING') || is(nj, 'FOLLOWING')) continue;
     const prev = txt(pi);
     const next = txt(nj);
     let label = null;

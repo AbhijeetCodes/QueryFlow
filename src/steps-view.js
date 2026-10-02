@@ -2,7 +2,7 @@
 // table / output in execution order; FROM-subqueries are nested inside the
 // step that uses them, so a derived "sub table" sits right where it is used.
 
-import { shapeChips, extraWindows, soleSource, semiPhrase } from './shape.js';
+import { shapeChips, extraWindows, soleSource, semiPhrase, windowCard } from './shape.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const JOIN_CLASS = { FROM: 'from', INNER: 'inner', LEFT: 'left', RIGHT: 'right', FULL: 'full', CROSS: 'cross', COMMA: 'cross' };
@@ -18,8 +18,10 @@ function keysText(item) {
   }).join(', ');
 }
 
-export function createStepsView(root, { onPick }) {
+export function createStepsView(root, { onPick, onRange }) {
   root.addEventListener('click', (e) => {
+    const win = e.target.closest('.win[data-from]');
+    if (win) { onRange(+win.dataset.from, +win.dataset.to); return; }
     const t = e.target.closest('[data-node]');
     if (t) { onPick(t.dataset.node); return; }
     if (e.target.closest('[data-expand]')) {
@@ -60,9 +62,8 @@ export function createStepsView(root, { onPick }) {
       rows.push(`<li class="d-agg"><span class="dk">aggregate</span> ${by}${sh.aggregates.length ? ` <span class="muted">· ${sh.aggregates.map((a) => a.toLowerCase()).join(', ')}</span>` : ''}</li>`);
     }
     if (sh.having.length) rows.push(`<li class="d-filter"><span class="dk">having</span> ${sh.having.map(code).join(' <span class="and">and</span> ')}</li>`);
-    for (const w of extraWindows(sh)) {
-      rows.push(`<li class="d-window"><span class="dk">window</span> ${code(w.fn.toLowerCase() + '()')}${w.partition ? ` per ${code(w.partition)}` : ''}${w.order ? ` by ${code(w.order)}` : ''}${w.alias ? ` <span class="muted">as ${esc(w.alias)}</span>` : ''}</li>`);
-    }
+    const wins = extraWindows(sh);
+    if (wins.length) rows.push(`<li class="d-window"><span class="dk">window</span><div class="wins">${wins.map((w) => windowCard(w, esc)).join('')}</div></li>`);
     if (sh.qualify.length && !(sh.dedupe && sh.dedupe.where === 'QUALIFY')) rows.push(`<li class="d-filter"><span class="dk">qualify</span> ${sh.qualify.map(code).join(' and ')}</li>`);
     if (sh.distinct) rows.push(`<li><span class="dk">distinct</span> rows</li>`);
     if (sh.branches > 1) rows.push(`<li><span class="dk">union</span> of ${sh.branches} SELECTs</li>`);

@@ -59,6 +59,82 @@ export function extraWindows(sh) {
   return sh.windows.filter((w) => !(sh.dedupe && RANKERS.has(w.fn) && w.partition === sh.dedupe.per));
 }
 
+const RANK_WHAT = {
+  ROW_NUMBER: 'numbers rows 1, 2, 3…',
+  RANK: 'ranks rows (ties share a rank, then skip)',
+  DENSE_RANK: 'ranks rows (ties share a rank, no gaps)',
+  PERCENT_RANK: 'percentile rank, 0 to 1',
+  CUME_DIST: 'share of rows at or before this one',
+};
+const firstArg = (args) => args.split(',')[0].trim();
+const nthArg = (args, n, dflt) => args.split(',')[n]?.trim() || dflt;
+const ordinal = (n) => {
+  if (!/^\d+$/.test(n)) return `${n}th`;
+  const t = n % 100;
+  const u = n % 10;
+  return n + (t > 10 && t < 14 ? 'th' : u === 1 ? 'st' : u === 2 ? 'nd' : u === 3 ? 'rd' : 'th');
+};
+
+// What one window function computes, in plain words:
+// { kind: 'rank' | 'running' | 'rolling' | 'total' | 'offset' | 'pick' | 'window',
+//   label: short name ("running sum"), what: one line, notes: [gotchas] }
+export function describeWindow(w) {
+  const fn = w.fn;
+  const f = fn.toLowerCase();
+  const ordered = !!(w.orderKeys?.length || w.order);
+  const frame = (w.frame || '').toUpperCase();
+  const notes = [];
+  if (RANK_WHAT[fn] || fn === 'NTILE') {
+    if (!ordered) notes.push('No ORDER BY: which row gets which number is arbitrary.');
+    const what = fn === 'NTILE' ? `splits rows into ${w.args || 'n'} equal buckets` : RANK_WHAT[fn];
+    return { kind: 'rank', label: fn === 'ROW_NUMBER' ? 'row number' : fn === 'NTILE' ? `ntile ${w.args}` : f.replace('_', ' '), what, notes };
+  }
+  if (fn === 'LAG' || fn === 'LEAD') {
+    const n = nthArg(w.args, 1, '1');
+    const where = n === '1' ? (fn === 'LAG' ? 'the previous row' : 'the next row') : `${n} rows ${fn === 'LAG' ? 'back' : 'ahead'}`;
+    if (!ordered) notes.push('No ORDER BY: "previous" and "next" are arbitrary.');
+    return { kind: 'offset', label: fn === 'LAG' ? 'previous value' : 'next value', what: `${firstArg(w.args)} from ${where}`, notes };
+  }
+  if (fn === 'FIRST_VALUE' || fn === 'LAST_VALUE' || fn === 'NTH_VALUE') {
+    const which = fn === 'FIRST_VALUE' ? 'first' : fn === 'LAST_VALUE' ? 'last' : ordinal(nthArg(w.args, 1, 'n'));
+    if (fn === 'LAST_VALUE' && ordered && !frame) notes.push('Default frame ends at the current row, so this is the current row\'s value. Add ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING.');
+    return { kind: 'pick', label: `${which} value`, what: `${which} ${firstArg(w.args)}`, notes };
+  }
+  const of = `${fn}(${w.args})`;
+  const rows = frame.match(/^ROWS\s+(?:BETWEEN\s+)?(\d+)\s+PRECEDING(?:\s+AND\s+CURRENT\s+ROW)?$/);
+  if (rows) return { kind: 'rolling', label: `rolling ${f}`, what: `${of} over this row and the ${rows[1]} before it`, notes };
+  const whole = /UNBOUNDED\s+PRECEDING\s+AND\s+UNBOUNDED\s+FOLLOWING/.test(frame);
+  if (!ordered || whole) {
+    return w.partition
+      ? { kind: 'total', label: `${f} per group`, what: `${of} of the whole group, on every row`, notes }
+      : { kind: 'total', label: `${f} of all rows`, what: `${of} of all rows, on every row`, notes };
+  }
+  if (!frame || /^(ROWS|RANGE)\s+(BETWEEN\s+)?UNBOUNDED\s+PRECEDING(\s+AND\s+CURRENT\s+ROW)?$/.test(frame)) {
+    return { kind: 'running', label: `running ${f}`, what: `${of} of all rows up to this one`, notes };
+  }
+  return { kind: 'window', label: `${f} over frame`, what: `${of} over ${w.frame}`, notes };
+}
+
+// One window function as a small card: kind + output column, what it computes,
+// then the PARTITION BY ("per") and ORDER BY ("order", ↑ asc / ↓ desc) keys.
+// Clicking it (data-from / data-to) selects the expression in the editor.
+export function windowCard(w, esc) {
+  const d = describeWindow(w);
+  const code = (t) => `<code>${esc(t)}</code>`;
+  const keys = (w.orderKeys || []).map((k) => code(k.text) + `<span class="win-dir" title="${k.desc ? 'descending: largest first' : 'ascending: smallest first'}">${k.desc ? '↓' : '↑'}</span>`);
+  const spec = [
+    ['per', w.partition ? code(w.partition) : '<span class="muted">all rows</span>'],
+    keys.length ? ['order', keys.join(' ')] : null,
+    w.frame && d.kind !== 'window' ? ['frame', code(w.frame)] : null,
+  ].filter(Boolean);
+  return `<div class="win k-${d.kind}" data-from="${w.from}" data-to="${w.to}" title="${esc(w.text || '')}\n\nClick to select it in the editor">
+    <div class="win-head"><span class="win-kind">${esc(d.label)}</span>${w.alias ? `<span class="win-alias">→ ${esc(w.alias)}</span>` : ''}</div>
+    <div class="win-what">${esc(d.what)}</div>
+    ${spec.map(([k, v]) => `<div class="win-spec"><span class="wk">${k}</span><span>${v}</span></div>`).join('')}
+    ${d.notes.map((t) => `<div class="win-note">⚠ ${esc(t)}</div>`).join('')}
+  </div>`;
+}
+
 // What a scope does, as short chips: dedupe, filter, Σ group-by, window, ∪, distinct, limit.
 // The title (hover) spells out the actual SQL.
 export function shapeChips(sh) {
@@ -96,8 +172,10 @@ export function shapeChips(sh) {
   if (sh.having.length) out.push({ cls: 'filter', text: `having ${sh.having.length}`, title: 'Groups are filtered by:\nHAVING ' + sh.having.join('\n  AND ') });
   const wins = extraWindows(sh);
   if (wins.length) {
-    out.push({ cls: 'window', text: wins.length > 1 ? `window ${wins.length}` : `${wins[0].fn.toLowerCase()}()`,
-      title: wins.map((w) => `${w.fn}() OVER (${w.partition ? 'PARTITION BY ' + w.partition + ' ' : ''}${w.order ? 'ORDER BY ' + w.order : ''})${w.alias ? ' AS ' + w.alias : ''}`).join('\n') });
+    const ds = wins.map(describeWindow);
+    const warn = ds.some((d) => d.notes.length);
+    out.push({ cls: warn ? 'window warn' : 'window', text: (warn ? '⚠ ' : '') + (wins.length > 1 ? `window ${wins.length}` : ds[0].label),
+      title: wins.map((w, i) => `${w.alias ? w.alias + ': ' : ''}${ds[i].label}, ${ds[i].what}${w.partition ? ` per ${w.partition}` : ''}${w.order ? `, ordered by ${w.order}` : ''}${ds[i].notes.map((t) => `\n  ⚠ ${t}`).join('')}`).join('\n') });
   }
   if (sh.qualify.length && !(sh.dedupe && sh.dedupe.where === 'QUALIFY')) out.push({ cls: 'filter', text: 'qualify', title: 'Rows are filtered after window functions:\nQUALIFY ' + sh.qualify.join(' AND ') });
   if (sh.branches > 1) out.push({ cls: 'union', text: `∪ ${sh.branches}`, title: `${sh.branches} SELECTs stacked with UNION / INTERSECT / EXCEPT` });

@@ -1,7 +1,7 @@
 // Right-bottom panel: lineage/join graph (dagre layout, SVG) + table list.
 import { joinLabel } from './analyzer.js';
 import { layoutGraph, edgeKey } from './graph-layout.js';
-import { shapeChips, soleSource, extraWindows } from './shape.js';
+import { shapeChips, soleSource, extraWindows, windowCard } from './shape.js';
 import { createStepsView } from './steps-view.js';
 import { EditorView } from '@codemirror/view';
 import { focusRanges } from './editor.js';
@@ -419,6 +419,7 @@ export function createGraphPanel(root, { view, onSelect }) {
   const stepsEl = root.querySelector('.steps-view');
   const steps = createStepsView(stepsEl, {
     onPick: (id) => { select(id); jumpTo(id); },
+    onRange: (from, to) => selectRange(from, to),
   });
   function showTab(name) {
     root.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
@@ -490,7 +491,14 @@ export function createGraphPanel(root, { view, onSelect }) {
     if (link) select(link.dataset.node, { jump: true });
     if (e.target.closest('[data-act="close"]')) select(null);
     if (e.target.closest('[data-act="isolate"]')) setIsolate(isolate === selected ? null : selected);
+    const win = e.target.closest('.win[data-from]');
+    if (win) selectRange(+win.dataset.from, +win.dataset.to);
   });
+
+  function selectRange(from, to) {
+    view.dispatch({ selection: { anchor: from, head: to }, effects: EditorView.scrollIntoView(from, { y: 'center' }) });
+    view.focus();
+  }
 
   tablesView.addEventListener('click', (e) => {
     const item = e.target.closest('[data-node]');
@@ -580,14 +588,14 @@ export function createGraphPanel(root, { view, onSelect }) {
     if (sh.filters.length) rows.push(['Filters', list(sh.filters)]);
     if (sh.groupBy.length) rows.push(['Group by', sh.groupBy.map(code).join(', ')]);
     if (sh.aggregates.length) rows.push(['Aggregates', sh.aggregates.map((a) => code(a + '()')).join(' ')]);
-    const wins = extraWindows(sh);
-    if (wins.length) rows.push(['Window', wins.map((w) => code(`${w.fn}() OVER (${[w.partition && 'PARTITION BY ' + w.partition, w.order && 'ORDER BY ' + w.order].filter(Boolean).join(' ')})`)).join('<br>')]);
     if (sh.having.length) rows.push(['Having', list(sh.having)]);
     if (sh.qualify.length) rows.push(['Qualify', list(sh.qualify)]);
     if (sh.distinct) rows.push(['Distinct', 'yes']);
     if (sh.branches > 1) rows.push(['Union', `${sh.branches} SELECTs`]);
     if (sh.limit) rows.push(['Limit', code(sh.limit)]);
-    return `<div class="dsec">What it does</div><dl class="shape">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>`;
+    const wins = extraWindows(sh);
+    return `<div class="dsec">What it does</div><dl class="shape">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>` +
+      (wins.length ? `<div class="dsec">Window functions · ${wins.length}</div><div class="wins">${wins.map((w) => windowCard(w, esc)).join('')}</div>` : '');
   }
 
   function renderTables(a) {

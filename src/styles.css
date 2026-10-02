@@ -514,6 +514,24 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--chip); pad
 .node.derived rect:first-of-type { stroke: color-mix(in srgb, var(--c-cte) 45%, var(--border-strong)); }
 
 
+/* ---------- window function cards (graph detail + Steps) ---------- */
+.wins { display: grid; gap: 6px; }
+.win { --wc: var(--j-from); border: 1px solid var(--border); border-left: 3px solid var(--wc); border-radius: 6px; padding: 5px 8px 6px; background: color-mix(in srgb, var(--wc) 5%, var(--panel)); cursor: pointer; font-size: 11.5px; min-width: 0; }
+.win:hover { border-color: color-mix(in srgb, var(--wc) 45%, var(--border)); border-left-color: var(--wc); }
+.win.k-rank { --wc: var(--j-inner); } .win.k-running, .win.k-rolling { --wc: var(--j-left); }
+.win.k-total { --wc: var(--j-full); } .win.k-offset, .win.k-pick { --wc: var(--c-cte); }
+.win-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.win-kind { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--wc); white-space: nowrap; }
+.win-alias { font-family: var(--mono); font-size: 11.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.win-what { font-family: var(--mono); font-size: 11px; color: var(--text); margin: 2px 0 3px; word-break: break-word; }
+.win-spec { display: grid; grid-template-columns: 38px 1fr; gap: 6px; align-items: baseline; margin-top: 1px; }
+.win-spec > span:last-child { min-width: 0; word-break: break-word; }
+.wk { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.win code { font-size: 10.5px; }
+.win-dir { color: var(--wc); font-weight: 700; margin: 0 6px 0 2px; }
+.win-note { margin-top: 4px; color: var(--warning); font-size: 11px; }
+.d-window .wins { margin-top: 3px; }
+
 .shape { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
 .shape dt { color: var(--text-muted); font-size: 11px; padding-top: 1px; }
 .shape dd { margin: 0; font-size: 11.5px; min-width: 0; word-break: break-word; }
@@ -705,10 +723,10 @@ button.s-src:hover { text-decoration: underline; }
 /* ---------- date windows ---------- */
 .chip.date rect { fill: color-mix(in srgb, var(--c-table) 14%, transparent); }
 .chip.date text { fill: var(--c-table); }
-.chip.date.warn rect { fill: color-mix(in srgb, var(--warning) 22%, transparent); stroke: var(--warning); stroke-width: 1; }
-.chip.date.warn text { fill: var(--warning); }
+.chip.date.warn rect, .chip.window.warn rect { fill: color-mix(in srgb, var(--warning) 22%, transparent); stroke: var(--warning); stroke-width: 1; }
+.chip.date.warn text, .chip.window.warn text { fill: var(--warning); }
 .schip.date { background: color-mix(in srgb, var(--c-table) 14%, transparent); color: var(--c-table); }
-.schip.date.warn { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); outline: 1px solid var(--warning); }
+.schip.date.warn, .schip.window.warn { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); outline: 1px solid var(--warning); }
 .dw-status { font-size: 11px; font-weight: 650; }
 .dw-status.ok { color: var(--ok); }
 .dw-status.warn { color: var(--warning); }

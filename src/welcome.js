@@ -27,7 +27,7 @@ export function showWelcome() {
   el.setAttribute('aria-labelledby', 'welcome-title');
   el.innerHTML = `
     <div class="welcome-head">
-      <b id="welcome-title">Welcome to QueryFlow</b>
+      <b id="welcome-title"><span class="welcome-icon" aria-hidden="true">i</span>Welcome to QueryFlow</b>
       <button class="icon-btn sm" data-close aria-label="Close">
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>

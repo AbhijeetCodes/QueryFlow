@@ -670,14 +670,19 @@ code { font-family: var(--mono); font-size: 0.92em; background: var(--chip); pad
 /* ---------- first-visit welcome card (src/welcome.js) ---------- */
 .welcome {
   position: fixed; right: 16px; bottom: 40px; z-index: 120; width: 340px; max-width: calc(100vw - 32px);
-  padding: 14px 16px 12px; background: var(--panel); color: var(--text);
-  border: 1px solid var(--border); border-top: 3px solid var(--accent); border-radius: 10px;
-  box-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.3);
+  padding: 14px 16px 12px 18px; color: var(--text);
+  /* An info callout: accent-tinted, with a stripe on the left, lifted off the page. */
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-left: 4px solid var(--accent); border-radius: 10px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08), 0 18px 44px -10px rgba(10, 20, 60, 0.38);
   opacity: 0; transform: translateY(10px); transition: opacity 0.2s, transform 0.2s;
 }
 .welcome.show { opacity: 1; transform: none; }
 .welcome-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.welcome-head b { font-size: 14px; font-weight: 650; }
+.welcome-head b { flex: 1; display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 650; }
+.welcome-icon { flex: none; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); font: 700 11.5px/1 Georgia, serif; font-style: italic; }
+.welcome .icon-btn:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .welcome-sub { margin: 3px 0 9px; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); }
 .welcome-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .welcome-list li { position: relative; padding-left: 14px; font-size: 12px; line-height: 1.4; color: var(--text-muted); }

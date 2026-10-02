@@ -102,6 +102,7 @@ const view = createEditor(document.getElementById('editor'), {
     { key: 'Mod-Shift-f', run: (v) => { formatDoc(v); return true; } },
     { key: 'Mod-s', run: (v) => { formatDoc(v); return true; }, preventDefault: true },
     { key: 'Mod-Shift-Enter', run: (v) => { copyAll(v); return true; } },
+    { key: 'Mod-Enter', run: () => { runQuery(); return true; }, preventDefault: true },
     { key: 'Mod-Shift-m', run: (v) => { openLintPanel(v); return true; } },
     { key: 'Mod-o', run: () => { openFile(); return true; }, preventDefault: true },
     { key: 'Mod-Shift-s', run: () => { saveFile(); return true; }, preventDefault: true },
@@ -143,6 +144,24 @@ const view = createEditor(document.getElementById('editor'), {
 view.dom.addEventListener('keyup', updateCursor);
 view.dom.addEventListener('click', updateCursor);
 
+// ---- test runs (the Run tab) ---------------------------------------------------------
+// The panel, the BigQuery -> DuckDB translator and DuckDB itself load on first use.
+const isBigQuery = () => currentDialect() === 'bigquery';
+let runPanel = null;
+let runMod = null;
+const runEl = () => document.querySelector('.run-view');
+function loadRun(el = runEl()) {
+  return (runMod ??= import('./run-panel.js').then(({ createRunPanel }) => {
+    runPanel = createRunPanel(el, { view, toast, getAnalysis: () => analyzeDoc(view.state.doc), isBigQuery });
+    return runPanel;
+  }));
+}
+async function runQuery(target) {
+  if (!isBigQuery()) { toast('Test runs need the BigQuery dialect'); return; }
+  graph.showTab('run');
+  (await loadRun()).run(target);
+}
+
 // Picking a step in the graph / Steps view narrows the filter panel to that
 // step; picking a step tag in the filter panel selects it in the graph.
 const vars = createVarsPanel(document.getElementById('vars'), { view, toast, onPickStep: (id) => graph.select(id) });
@@ -150,6 +169,8 @@ const graph = createGraphPanel(document.getElementById('graph'), {
   view,
   onSelect: (id) => vars.focusStep(id),
   onPreview: (id) => previewCte(id),
+  onRunTab: (el) => loadRun(el).then((p) => p.update(analyzeDoc(view.state.doc))),
+  onRun: (id) => runQuery(id),
 });
 
 // ---- preview a CTE -------------------------------------------------------------
@@ -261,6 +282,7 @@ function refresh() {
   const a = analyzeDoc(view.state.doc);
   vars.update(a);
   graph.update(a);
+  if (runPanel && !runEl().hidden) runPanel.update(a);
   const vcount = a.variables.reduce((s, v) => s + v.names.length, 0);
   statSummary.textContent = [
     plural(view.state.doc.lines, 'line'),
@@ -318,6 +340,7 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
   }
   if (act === 'open') openFile();
   if (act === 'save') saveFile();
+  if (act === 'run') runQuery();
   if (act === 'share') shareLink();
   if (act === 'preview') {
     const n = cteAt(analyzeDoc(view.state.doc), view.state.selection.main.head);
@@ -393,6 +416,8 @@ document.addEventListener('keydown', (e) => {
   const t = e.target;
   // Let the promote form's own name / default inputs keep native text undo.
   if (t.closest?.('.promote')) return;
+  // …and the Run tab's test tables and parameter values.
+  if (t.closest?.('.run-view')) return;
   e.preventDefault();
   runHistory(isUndo ? 'undo' : 'redo');
 }, true);
@@ -445,6 +470,7 @@ const actItem = (act, name, key = '') => `<button class="tm-item tm-act" role="m
 themeMenu.innerHTML =
   actItem('paste', 'Paste &amp; format', '⌘A ⌘V') + actItem('open', 'Open .sql file…', '⌘O') + actItem('save', 'Save as .sql', '⌘⇧S') +
   actItem('preview', 'Copy preview of this CTE', '⌘⌥↵') +
+  actItem('run', 'Run on test data', '⌘↵') +
   '<div class="tm-sep"></div>' + actItem('sample', 'Load sample query') + actItem('clear', 'Clear editor') +
   `<div class="tm-sep"></div><button class="tm-item tm-act" role="menuitemcheckbox" data-act="format-on-paste"><span class="tm-text"><b>Format on paste</b></span><span class="tm-check">✓</span></button>` +
   '<div class="tm-sep"></div><div class="tm-group">Theme</div>' +

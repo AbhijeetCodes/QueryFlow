@@ -222,13 +222,14 @@ function lineageOf(id, nodes) {
   return set;
 }
 
-export function createGraphPanel(root, { view, onSelect, onPreview }) {
+export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, onRun }) {
   root.innerHTML = `
     <div class="graph-head">
       <div class="tabs" role="tablist">
         <button class="tab" data-tab="steps" role="tab" title="The query as a readable top-to-bottom recipe">Steps</button>
         <button class="tab" data-tab="graph" role="tab" title="Lineage / join graph">Graph</button>
         <button class="tab" data-tab="tables" role="tab">Tables <span class="badge" data-count="tables">0</span></button>
+        <button class="tab" data-tab="run" role="tab" title="Run the query on small test tables, here in the browser (⌘Enter)">Run</button>
       </div>
       <div class="graph-tools">
         <button class="mini" data-act="links" title="IN / EXISTS subquery filters and reads of a params (constants) CTE. Hidden, they show as 'in X' / 'uses X' chips on the node; shown, they are dotted edges."></button>
@@ -264,6 +265,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview }) {
       </div>
       <div class="tables-view" hidden></div>
       <div class="steps-view" hidden></div>
+      <div class="run-view" hidden></div>
     </div>`;
 
   const svg = root.querySelector('.graph-svg');
@@ -481,6 +483,9 @@ export function createGraphPanel(root, { view, onSelect, onPreview }) {
     graphView.hidden = name !== 'graph';
     tablesView.hidden = name !== 'tables';
     stepsEl.hidden = name !== 'steps';
+    const runEl = root.querySelector('.run-view');
+    runEl.hidden = name !== 'run';
+    if (name === 'run') onRunTab?.(runEl); // the Run panel loads on first use
     root.querySelector('.graph-tools').style.visibility = name === 'graph' ? 'visible' : 'hidden';
     try { localStorage.setItem('queryflow.tab', name); } catch { /* ignore */ }
     if (name === 'graph' && graphStale && analysis) { graphStale = false; drawGraph(analysis); }
@@ -492,7 +497,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview }) {
   });
   let startTab = 'steps';
   try { startTab = localStorage.getItem('queryflow.tab') || 'steps'; } catch { /* ignore */ }
-  showTab(['steps', 'graph', 'tables'].includes(startTab) ? startTab : 'steps');
+  showTab(['steps', 'graph', 'tables', 'run'].includes(startTab) ? startTab : 'steps');
 
   vp.addEventListener('click', (e) => {
     const n = e.target.closest('.node');
@@ -556,6 +561,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview }) {
     if (e.target.closest('[data-act="close"]')) select(null);
     if (e.target.closest('[data-act="isolate"]')) setIsolate(isolate === selected ? null : selected);
     if (e.target.closest('[data-act="preview"]')) onPreview?.(selected);
+    if (e.target.closest('[data-act="run-cte"]')) onRun?.(selected);
     const win = e.target.closest('.win[data-from]');
     if (win) selectRange(+win.dataset.from, +win.dataset.to);
   });
@@ -635,6 +641,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview }) {
         <span class="kind ${n.kind}">${KIND_LABEL[n.kind] || n.kind}</span>
         <b>${esc(n.label)}</b>
         ${n.kind === 'cte' ? '<button class="mini" data-act="preview" title="Copy WITH … SELECT * FROM this CTE LIMIT 100, ready to run (⌘⌥Enter in the editor)">Copy preview</button>' : ''}
+        ${n.kind === 'cte' && onRun ? '<button class="mini" data-act="run-cte" title="Run the query up to this CTE on the test tables and show its rows">Run</button>' : ''}
         <button class="mini" data-act="isolate" title="Show only what feeds this step and what it feeds (or double-click a node)">${isolate === n.id ? 'Show all' : 'Focus lineage'}</button>
         <button class="icon-btn" data-act="close" title="Close">×</button>
       </div>

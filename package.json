@@ -19,6 +19,7 @@
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.13",
     "@dagrejs/dagre": "^3.1.1",
+    "@duckdb/duckdb-wasm": "^1.33.1-dev57.0",
     "@lezer/highlight": "^1.2.5",
     "sql-formatter": "^15.9.0"
   },

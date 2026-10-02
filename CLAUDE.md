@@ -7,7 +7,10 @@ hosted for free as a static site. See README.md for features, layout and hosting
 
 - **Editor only, no server.** Everything works from the SQL text in the browser: no backend,
   no API calls, no database connection, no login, no AI features. `npm run build` must stay a
-  plain static `dist/` that any static host can serve.
+  plain static `dist/` that any static host can serve. The one engine is local: the Run tab runs
+  BigQuery queries on small test tables with DuckDB-WASM, served from `dist/` itself and loaded
+  only on the first run (extension autoloading is switched off, so it never fetches anything).
+  Its `.wasm` is ~36 MB (~8 MB gzipped), over Cloudflare Pages' 25 MB per-file limit.
 - **It will be public.** Keep company-internal names, datasets, endpoints and URLs out of
   code, sample queries and docs.
 - **Light and fast.** It's for reading and editing 1,000+ line queries. Avoid new dependencies
@@ -43,6 +46,13 @@ npm run build    # static site in dist/ (relative paths via base: './')
 - `src/vars-panel.js`, `src/graph-panel.js`, `src/steps-view.js`: right-hand panels
 - `src/diff.js`, `src/diff-view.js`: review-before-copy diff
 - `src/main.js`: wiring (toolbar, status bar, themes, resizable panes)
+- Run tab (all lazy-loaded): `src/bq2duck.js` translates BigQuery to DuckDB token by token
+  (keeps line numbers; points table names at test tables); `src/testdata.js` parses the CSV / TSV
+  test tables, holds the size limits and guesses columns / starter rows from the analysis;
+  `src/runner.js` plans and executes a run against any driver; `src/engine.js` is the
+  DuckDB-WASM driver; `src/run-panel.js` is the UI. `test/run.test.js` runs the translations on
+  DuckDB's Node build, so add a case there for each new translation rule.
 
 Every edit, including edits from the side panels, is a CodeMirror transaction, so one undo
-history covers all of them. Saved state uses `localStorage` keys prefixed `queryflow.`.
+history covers all of them. Saved state uses `localStorage` keys prefixed `queryflow.` (test tables live in
+`queryflow.testdata`).

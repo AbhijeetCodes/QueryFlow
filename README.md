@@ -5,7 +5,8 @@ and MySQL queries, right in the browser. Paste an old query and it formats it, d
 join, and lists every variable and hardcoded filter value so you can change them
 in one place. It works like a code editor for SQL: hover a name to see what it is,
 jump to where a CTE or alias is defined, rename it everywhere, copy a ready-to-run
-preview of any CTE, and share the query as a link. Then copy the SQL back into your database.
+preview of any CTE, and share the query as a link. For BigQuery you can also **run the query on
+small test tables** you type in, right in the browser. Then copy the SQL back into your database.
 
 Everything runs client-side from the SQL text: no server, no login, no database
 connection. Your query stays in your browser (in `localStorage`). A share link
@@ -19,7 +20,7 @@ npm install
 npm run dev        # http://localhost:5199
 ```
 
-`npm test` runs the analyzer, formatter, diff and navigation tests. `npm run build` writes the static site to `dist/`.
+`npm test` runs the analyzer, formatter, diff, navigation and test-run tests (the last run real SQL on DuckDB's Node build). `npm run build` writes the static site to `dist/`.
 
 ## Publish on GitHub Pages
 
@@ -45,7 +46,7 @@ GitHub Pages site open there for anyone.
 
 | Host | Free URL | Setup |
 |---|---|---|
-| **Cloudflare Pages** | `queryflow.pages.dev` | *Workers & Pages → Create → Pages → Connect to Git*. Build command `npm run build`, output directory `dist`. |
+| **Cloudflare Pages** | `queryflow.pages.dev` | *Workers & Pages → Create → Pages → Connect to Git*. Build command `npm run build`, output directory `dist`. Cloudflare Pages rejects files over 25 MB, and the DuckDB engine behind the Run tab is ~36 MB, so prefer another host if you want test runs. |
 | **Netlify** | `queryflow.netlify.app` | *Add new site → Import from Git*, or drag the `dist/` folder onto app.netlify.com/drop. Build command `npm run build`, publish directory `dist`. |
 | **Vercel** | `queryflow.vercel.app` | *Add New → Project*, framework preset *Vite*. |
 
@@ -55,7 +56,7 @@ All of them, and GitHub Pages, can also serve a custom domain you own.
 
 | Left | Right top | Right bottom |
 |---|---|---|
-| Editor: highlighting for the chosen dialect, lint squiggles, folding, autocomplete, hover cards, and a sticky header naming the CTE you're scrolled into | **Variables** (`DECLARE`, `SET @var`, params CTE), **parameters**, **hardcoded filter values**, **date windows** | **Steps** (the query as a top-to-bottom recipe), **Graph** (tables → CTEs → output) and a **Tables** list |
+| Editor: highlighting for the chosen dialect, lint squiggles, folding, autocomplete, hover cards, and a sticky header naming the CTE you're scrolled into | **Variables** (`DECLARE`, `SET @var`, params CTE), **parameters**, **hardcoded filter values**, **date windows** | **Steps** (the query as a top-to-bottom recipe), **Graph** (tables → CTEs → output), a **Tables** list and **Run** (test tables and results) |
 
 ## Dialects
 
@@ -91,6 +92,22 @@ Switching dialect re-reads the same text; an untouched sample query is swapped f
 - **Copy preview of a CTE** (⌘⌥Enter, the hover card, the graph's node card or the ⋯ menu): copies `WITH <the CTEs it needs> SELECT * FROM it LIMIT 100`, with the script's DECLAREs and temp functions in front, ready to run in BigQuery. It's the quickest way to check one step of a long query. A CTE nested inside another is lifted out too. (LIMIT doesn't lower the bytes BigQuery bills.)
 - **Share link** (the link icon): copies a URL with the query compressed into its `#hash`. Browsers don't send the hash to the server, so the query isn't uploaded anywhere, not even to the host. Opening the link loads the query; ⌘Z brings back what you had. Very long queries make long links that some chat apps cut; save a `.sql` file for those.
 - **Open / save files**: ⌘O, or drop a `.sql` file on the editor, to open it (formatted if "Format on paste" is on). ⌘⇧S downloads the query as `.sql`.
+
+### Run on test data (BigQuery)
+
+The **Run** tab (⌘Enter, or *Run on test data* in the ⋯ menu) runs the query on small tables you
+type in, with [DuckDB](https://duckdb.org) compiled to WebAssembly. It all happens in your
+browser: the engine is part of this site, loads on the first run (~8 MB, then cached) and never
+contacts a server. Nothing is uploaded.
+
+- **One box per source table** the query reads. Type or paste CSV, or TSV copied from a spreadsheet. Types are detected from the values; set one in the header with `name:TYPE` (`id:INT64`, `tags:ARRAY<STRING>`). Empty cells and `NULL` are NULL.
+- **Columns from query** writes the header for you: the columns the query reads from that table. **Starter rows** adds 3 made-up rows that fit the query: ids 1–3 so joins match, values from its `=` / `IN` filters, dates inside its date window. Tables used only in `NOT IN` / `NOT EXISTS` filters get ids from 101, so they don't filter everything out.
+- **Query parameters**: give each `@param` a SQL value (`'SG'`, `42`, `DATE '2024-01-01'`). `DECLARE` variables use their defaults, so edit those in the Variables panel.
+- **Whole query or one CTE**: the target menu runs everything, or the script up to a chosen CTE (also *Run* in a CTE's graph card). Temp tables, temp functions and `SET` work like in a BigQuery script; the result is the last query, or the table the script wrote last.
+- **Results** show up to 1,000 rows with BigQuery-style values. Errors name the editor line, and *SQL sent to DuckDB* shows exactly what ran.
+- **Limits**: up to 20 tables, 1,000 rows, 60 columns and 200k characters per table. Test tables are kept in this browser (`localStorage`) per table name, so they come back for the next query that reads the same table. *Clear all test data* removes them.
+
+**How close is it to BigQuery?** QueryFlow rewrites the query for DuckDB: table names, strings, `SAFE_CAST`, `SAFE_DIVIDE`, `DATE_TRUNC` / `DATE_ADD` / `DATE_DIFF` (argument order, Sunday weeks, DATE results), `EXTRACT(DAYOFWEEK …)`, `FORMAT_DATE` / `PARSE_DATE`, `UNNEST … WITH OFFSET`, `IN UNNEST`, `[OFFSET(n)]`, `STRUCT(…)`, `SELECT * EXCEPT`, `ARRAY_AGG(… IGNORE NULLS … LIMIT n)`, `COUNTIF`, regex and JSON functions, `DECLARE` / `SET`, temp functions, and NULLs sorting first. QUALIFY, window functions, `GROUP BY ALL` and most other SQL run as they are. Not supported: scripting blocks (`IF`, `LOOP`, `BEGIN … END`), JavaScript UDFs, `SELECT AS STRUCT`, ML / GIS functions and time zones (everything is UTC). Treat a run as a logic check on a handful of rows; edge cases such as float rounding can differ from BigQuery.
 
 ### Variables and filter values
 
@@ -132,6 +149,7 @@ On Windows and Linux, read ⌘ as Ctrl and ⌥ as Alt.
 | Keys | Action |
 |---|---|
 | ⌘⇧F or ⌘S | Format |
+| ⌘Enter | Run on the test tables (Run tab, BigQuery) |
 | ⌘⇧Enter | Copy SQL (reviews the diff first if you've edited the pasted query) |
 | ⌘⌥Enter | Copy a preview query for the CTE at the cursor |
 | F12 or ⌘-click | Go to definition |
@@ -162,4 +180,8 @@ In Chrome on Windows and Linux, F12 opens the developer tools; use Ctrl-click or
 | `src/graph-panel.js`, `src/graph-layout*.js` | Lineage graph (dagre; big graphs lay out in a Web Worker) and Tables list |
 | `src/steps-view.js` | Steps tab |
 | `src/diff.js`, `src/diff-view.js` | Review-before-copy diff |
+| `src/bq2duck.js` | BigQuery → DuckDB translation for test runs (token rewrite that keeps line numbers) |
+| `src/testdata.js` | Test tables: CSV / TSV parsing, limits, columns the query reads, starter rows |
+| `src/runner.js`, `src/engine.js` | A test run (load tables, run statements, cap rows) and the DuckDB-WASM driver |
+| `src/run-panel.js` | Run tab |
 | `src/main.js` | Wires it together: toolbar, status bar, theme, panes, files, share links |

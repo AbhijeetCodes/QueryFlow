@@ -88,7 +88,3 @@ All of them can also serve a custom domain you own.
 | `src/steps-view.js` | Steps tab |
 | `src/diff.js`, `src/diff-view.js` | Review-before-copy diff |
 | `src/main.js` | Wires it together: toolbar, status bar, theme, panes |
-
-QueryFlow is the editor-only cut of Stepwise, without the parts that need a
-server (Ask Claude, BigQuery Validate / Run / Count rows, table schemas, sqlfluff
-and the Updates calendar).

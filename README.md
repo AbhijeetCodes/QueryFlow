@@ -343,3 +343,7 @@ For contributors: a map of the source.
 | `src/practice.js` | The practice database (a made-up Pokédex) and its example queries |
 | `src/sample.js` | The editor's example: a Pokédex query per dialect, on the practice tables (loaded on first use) |
 | `src/main.js` | Wires it together: toolbar, status bar, theme, panes, files, share links |
+
+## License
+
+[MIT](LICENSE). Free to use, change and host, including commercially.

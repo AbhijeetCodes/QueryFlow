@@ -6,7 +6,7 @@ import { EditorView } from '@codemirror/view';
 import { previewSql } from './symbols.js';
 import { tableKey } from './bq2duck.js';
 import { planRun, executePlan, planText } from './runner.js';
-import { LIMITS, inspectTable, queryColumns, starterRows, withColumns, csvLine } from './testdata.js';
+import { LIMITS, inspectTable, queryColumns, starterRows, withColumns, csvLine, importText, resolveTableData, parseDelimited } from './testdata.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`;
@@ -92,8 +92,19 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
     </div>
     <div class="run-off" hidden>Test runs translate BigQuery SQL for DuckDB. Switch the dialect to BigQuery to use them.</div>
     <div class="run-data">
-      <p class="run-intro">Type or paste a few rows per table as CSV or TSV (a copy from a spreadsheet works). The query runs on them here in your browser with DuckDB: nothing is uploaded. Up to ${LIMITS.rows.toLocaleString()} rows and ${LIMITS.cols} columns per table. Add <code>:TYPE</code> to a header to set a type, e.g. <code>id:INT64</code>.</p>
+      <p class="run-intro">Type or paste a few rows per table as CSV or TSV (cells copied from Excel or Sheets work), or import CSV files. The query runs on them here in your browser with DuckDB: nothing is uploaded. Up to ${LIMITS.rows.toLocaleString()} rows and ${LIMITS.cols} columns per table. Add <code>:TYPE</code> to a header to set a type, e.g. <code>id:INT64</code>.</p>
+      <div class="tt-bar">
+        <button class="mini accent" data-act="add" title="Add a test table by name, then paste or import its rows">+ Add table</button>
+        <button class="mini" data-act="import" title="Import .csv / .tsv files. A file named orders.csv fills the query's orders table">Import CSV files…</button>
+        <span class="tt-drop-hint">or drop .csv files here</span>
+      </div>
+      <h4 class="tt-h">Tables this query reads <span class="badge" data-count="query">0</span></h4>
       <div class="tt-list"></div>
+      <div class="tt-other-wrap" hidden>
+        <h4 class="tt-h">Your other test tables <span class="badge" data-count="other">0</span></h4>
+        <p class="tt-hint">Saved in this browser for any query. A query uses one when it reads a table of that name; a short name like <code>orders</code> also serves <code>proj.ds.orders</code>.</p>
+        <div class="tt-others"></div>
+      </div>
       <div class="tt-params"></div>
       <div class="tt-foot"><button class="mini" data-act="clear-all">Clear all test data</button></div>
     </div>
@@ -106,6 +117,10 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
   const dataEl = $('.run-data');
   const resEl = $('.run-results');
   const listEl = $('.tt-list');
+  const otherEl = $('.tt-others');
+  const fileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.csv,.tsv,.txt,text/csv,text/tab-separated-values', multiple: true, hidden: true });
+  root.append(fileInput);
+  let importTarget = null; // a card's key, or null to match files to tables by name
   const paramsEl = $('.tt-params');
   const offEl = $('.run-off');
 
@@ -113,7 +128,8 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
   let analysis = null;
   let running = null; // { stop() }
   let lastPlan = null;
-  const cards = new Map(); // tableKey -> element
+  const cards = new Map(); // tableKey -> element (both lists)
+  let drafts = []; // "+ Add table" cards that have no name yet
   let saveTimer;
 
   function save() {
@@ -137,6 +153,9 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
   showPane('data');
 
   // ---- test tables --------------------------------------------------------------------
+  // Two lists: the tables the current query reads (fixed names, with helpers that
+  // read the query), and every other saved test table (named by you, kept for any
+  // query). A saved `orders` serves a query's `proj.ds.orders` when that one is empty.
 
   function sourceTables(a) {
     const seen = new Map();
@@ -149,42 +168,75 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
     return [...seen.values()].sort((x, y) => x.full.localeCompare(y.full));
   }
 
-  function statText(text) {
+  function statText(text, from) {
     const info = inspectTable(text);
-    if (info.empty) return { text: 'no data yet', cls: 'warn' };
+    if (info.empty) return from ? { text: `uses saved ${from}`, cls: '' } : { text: 'no data yet', cls: 'warn' };
     if (info.error) return { text: info.error, cls: 'error' };
     return { text: `${plural(info.rows, 'row')} · ${plural(info.cols, 'column')}`, cls: info.rows ? '' : 'warn' };
   }
 
-  function card(t) {
+  const TOOLS = {
+    query: `
+      <button class="mini" data-act="header" title="Add the columns this query reads from the table to the header row">Columns from query</button>
+      <button class="mini" data-act="starter" title="Add 3 rows of made-up values that match the query's joins and filters">Starter rows</button>`,
+    other: '',
+  };
+
+  function card(key, kind) {
     const el = document.createElement('section');
-    el.className = 'tt';
-    el.dataset.key = t.key;
+    el.className = `tt tt-${kind}`;
+    el.dataset.key = key;
+    el.dataset.kind = kind;
     el.innerHTML = `
-      <header><b class="tt-name"></b><span class="tt-full"></span><span class="tt-stat"></span></header>
+      <header>${kind === 'query'
+        ? '<b class="tt-name"></b><span class="tt-full"></span>'
+        : '<input class="tt-rename" spellcheck="false" autocomplete="off" placeholder="table name, e.g. orders or proj.ds.orders" aria-label="Table name">'}
+        <span class="tt-stat"></span></header>
       <div class="tt-cols"></div>
       <textarea class="tt-text" spellcheck="false" autocomplete="off" rows="4"></textarea>
-      <div class="tt-tools">
-        <button class="mini" data-act="header" title="Add the columns this query reads from the table to the header row">Columns from query</button>
-        <button class="mini" data-act="starter" title="Add 3 rows of made-up values that match the query's joins and filters">Starter rows</button>
-        <button class="mini" data-act="clear" title="Empty this table">Clear</button>
+      <div class="tt-grid" hidden></div>
+      <div class="tt-tools">${TOOLS[kind]}
+        <button class="mini" data-act="import-one" title="Fill this table from a .csv / .tsv file">Import file…</button>
+        <button class="mini" data-act="view" title="Switch between the text and a table view of the rows">Table view</button>
+        <button class="mini" data-act="${kind === 'query' ? 'clear' : 'delete'}">${kind === 'query' ? 'Clear' : 'Delete'}</button>
       </div>`;
     const ta = el.querySelector('textarea');
-    ta.value = store.tables[t.key] ?? '';
+    ta.value = store.tables[key] ?? '';
+    ta.placeholder = kind === 'query' ? '' : 'id,name,created_at\n1,Ana,2024-01-15 10:00:00';
     ta.addEventListener('input', () => {
-      store.tables[t.key] = ta.value;
-      if (!ta.value) delete store.tables[t.key];
+      const k = el.dataset.key;
+      if (!k) return; // a draft without a name keeps its text until it gets one
+      if (ta.value || el.dataset.kind === 'other') store.tables[k] = ta.value;
+      else delete store.tables[k];
       save();
       paintStat(el);
+      if (el.dataset.kind === 'other' || !ta.value || ta.value.length < 3) paintLinks();
     });
     ta.addEventListener('keydown', (e) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
     });
+    // A big paste (a whole sheet) into an empty box keeps the header and the first rows.
+    ta.addEventListener('paste', (e) => {
+      const t = e.clipboardData?.getData('text') ?? '';
+      if (t.length < 5000 || (ta.value && !(ta.selectionStart === 0 && ta.selectionEnd === ta.value.length))) return;
+      const r = importText(t);
+      if (!r.truncated) return;
+      e.preventDefault();
+      setText(el, r.text);
+      toast(`Kept the header and the first ${r.rows.toLocaleString()} of ${r.total.toLocaleString()} rows`);
+    });
+    const name = el.querySelector('.tt-rename');
+    if (name) {
+      name.value = key;
+      name.addEventListener('change', () => renameCard(el, name.value));
+      name.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); name.blur(); } });
+    }
     return el;
   }
 
   function setText(el, text) {
     const ta = el.querySelector('textarea');
+    if (!el.querySelector('.tt-grid').hidden) toggleView(el, false);
     // execCommand keeps the textarea's own undo; fall back to a plain set.
     ta.focus();
     ta.select();
@@ -192,24 +244,183 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
   }
 
   function paintStat(el) {
-    const st = statText(el.querySelector('textarea').value);
+    const st = statText(el.querySelector('textarea').value, el.dataset.from);
     const s = el.querySelector('.tt-stat');
     s.textContent = st.text;
     s.className = 'tt-stat ' + st.cls;
   }
 
-  listEl.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-act]');
-    const el = e.target.closest('.tt');
-    if (!b || !el) return;
-    const key = el.dataset.key;
-    const cols = (analysis && queryColumns(analysis).get(key)) || [];
+  // Which saved tables stand in for which empty query tables.
+  function paintLinks() {
+    const served = new Map(); // saved key -> [query table names]
+    for (const el of listEl.querySelectorAll('.tt-query')) {
+      const found = resolveTableData(store.tables, el.dataset.key);
+      const from = found && !found.exact ? found.key : '';
+      el.dataset.from = from;
+      el.querySelector('.tt-uses')?.remove();
+      if (from) {
+        el.querySelector('.tt-cols').insertAdjacentHTML('afterend', `<div class="tt-uses">Uses your saved table <button class="link" data-act="goto-table" data-key="${esc(from)}">${esc(from)}</button>. Rows typed here take its place.</div>`);
+        served.set(from, [...(served.get(from) || []), el.querySelector('.tt-name').textContent]);
+      }
+      paintStat(el);
+    }
+    for (const el of otherEl.querySelectorAll('.tt-other')) {
+      const names = served.get(el.dataset.key);
+      el.querySelector('.tt-cols').innerHTML = names ? `Used by this query as <code>${names.map(esc).join('</code>, <code>')}</code>` : '';
+      paintStat(el);
+    }
+  }
+
+  function toggleView(el, grid = el.querySelector('.tt-grid').hidden) {
+    const g = el.querySelector('.tt-grid');
     const ta = el.querySelector('textarea');
-    if (b.dataset.act === 'header') {
+    g.hidden = !grid;
+    ta.hidden = grid;
+    el.querySelector('[data-act="view"]').textContent = grid ? 'Text view' : 'Table view';
+    if (!grid) return;
+    const info = inspectTable(ta.value);
+    const { rows } = parseDelimited(ta.value);
+    if (!rows.length) { g.innerHTML = '<div class="tt-grid-empty">No rows yet</div>'; return; }
+    const shown = rows.slice(1, 201);
+    const width = info.names.length;
+    g.innerHTML = `<table class="res-grid"><thead><tr><th class="rn">#</th>${info.names.map((n) => `<th>${esc(n)}${info.types[n] ? `<small>${esc(info.types[n])}</small>` : ''}</th>`).join('')}</tr></thead><tbody>${
+      shown.map((r, i) => `<tr><td class="rn">${i + 1}</td>${Array.from({ length: Math.max(width, r.length) }, (_, j) => {
+        const v = r[j];
+        return v === undefined || v === '' || v === 'NULL' ? '<td class="null">NULL</td>' : `<td>${esc(v.length > 80 ? v.slice(0, 80) + '…' : v)}</td>`;
+      }).join('')}</tr>`).join('')}</tbody></table>${rows.length - 1 > shown.length ? `<div class="tt-grid-more">First ${shown.length} of ${plural(rows.length - 1, 'row')}</div>` : ''}`;
+  }
+
+  const validName = (s) => /^[A-Za-z0-9_`\-.*$]+$/.test(s) && !/^\.|\.$|\.\./.test(s);
+
+  function renameCard(el, raw) {
+    const name = raw.trim().replace(/`/g, '');
+    const input = el.querySelector('.tt-rename');
+    const old = el.dataset.key;
+    if (!name) { if (old) input.value = old; return; }
+    if (!validName(name)) { toast('Use letters, digits, _ - and dots, like orders or proj.ds.orders', 'error'); input.value = old || ''; return; }
+    const key = tableKey(name);
+    if (key === old) return;
+    if (store.tables[key] !== undefined || cards.has(key)) { toast(`There is already a test table called ${key}`, 'error'); input.value = old || ''; return; }
+    const text = el.querySelector('textarea').value;
+    if (old) { delete store.tables[old]; cards.delete(old); }
+    drafts = drafts.filter((d) => d !== el);
+    store.tables[key] = text;
+    save();
+    el.dataset.key = key;
+    cards.set(key, el);
+    renderTables(analysis);
+    toast(old ? `Renamed to ${key}` : `Added ${key}`);
+  }
+
+  function addTable() {
+    const el = card('', 'other');
+    el.dataset.key = '';
+    drafts.unshift(el);
+    renderTables(analysis);
+    el.scrollIntoView({ block: 'nearest' });
+    el.querySelector('.tt-rename').focus();
+  }
+
+  // ---- importing files ------------------------------------------------------------------
+
+  const baseName = (f) => f.name.replace(/\.[^.]+$/, '').trim().replace(/\s+/g, '_');
+
+  // The table a file fills: one the query reads with that name, else a new saved table.
+  function fileTarget(file) {
+    const base = tableKey(baseName(file));
+    const q = analysis ? sourceTables(analysis) : [];
+    const hit = q.find((t) => t.key === base || t.label.toLowerCase() === base || t.key.endsWith('.' + base));
+    return hit ? hit.key : base;
+  }
+
+  async function importFiles(files, target = null) {
+    for (const file of files) {
+      if (/\.(xlsx|xlsm|xls|numbers|ods)$/i.test(file.name)) {
+        toast(`${file.name} is a spreadsheet: save it as CSV (File → Save As → CSV), or copy its cells and paste them into a table`, 'error');
+        continue;
+      }
+      if (file.size > 20 * 1024 * 1024) { toast(`${file.name} is over 20 MB: test tables are meant to be small`, 'error'); continue; }
+      let raw;
+      try { raw = await file.text(); } catch { toast(`Couldn't read ${file.name}`, 'error'); continue; }
+      if (raw.includes('\u0000')) { toast(`${file.name} doesn't look like a CSV file`, 'error'); continue; }
+      const key = target || fileTarget(file);
+      if (!validName(key)) { toast(`Rename ${file.name} to a plain name like orders.csv first`, 'error'); continue; }
+      if ((store.tables[key] ?? '').trim() && !confirm(`Replace the test data in ${key} with ${file.name}?`)) continue;
+      const r = importText(raw);
+      store.tables[key] = r.text;
+      save();
+      const el = cards.get(key);
+      if (el) { el.querySelector('textarea').value = r.text; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
+      renderTables(analysis);
+      toast(`Imported ${file.name} → ${key} (${r.truncated ? `first ${r.rows.toLocaleString()} of ${r.total.toLocaleString()} rows` : plural(r.rows, 'row')})`);
+    }
+  }
+
+  fileInput.addEventListener('change', () => {
+    const files = [...fileInput.files];
+    fileInput.value = '';
+    importFiles(files, importTarget);
+    importTarget = null;
+  });
+
+  dataEl.addEventListener('dragover', (e) => {
+    if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+    e.preventDefault();
+    dataEl.classList.add('dropping');
+    root.querySelectorAll('.tt.drop-on').forEach((x) => x.classList.remove('drop-on'));
+    e.target.closest('.tt')?.classList.add('drop-on');
+  });
+  dataEl.addEventListener('dragleave', (e) => {
+    if (!dataEl.contains(e.relatedTarget)) { dataEl.classList.remove('dropping'); root.querySelectorAll('.tt.drop-on').forEach((x) => x.classList.remove('drop-on')); }
+  });
+  dataEl.addEventListener('drop', (e) => {
+    const files = [...(e.dataTransfer?.files || [])];
+    dataEl.classList.remove('dropping');
+    root.querySelectorAll('.tt.drop-on').forEach((x) => x.classList.remove('drop-on'));
+    if (!files.length) return;
+    e.preventDefault();
+    const onCard = e.target.closest('.tt');
+    // Dropped on a card: that table (one file). Elsewhere: each file finds its table by name.
+    importFiles(files, onCard?.dataset.key && files.length === 1 ? onCard.dataset.key : null);
+  });
+
+  dataEl.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === 'add') { addTable(); return; }
+    if (act === 'import') { importTarget = null; fileInput.click(); return; }
+    if (act === 'goto-table') {
+      const el = cards.get(b.dataset.key);
+      el?.scrollIntoView({ block: 'nearest' });
+      el?.querySelector('textarea').focus();
+      return;
+    }
+    const el = e.target.closest('.tt');
+    if (!el) return;
+    const key = el.dataset.key;
+    const ta = el.querySelector('textarea');
+    if (act === 'import-one') {
+      if (!key) { toast('Name the table first'); el.querySelector('.tt-rename')?.focus(); return; }
+      importTarget = key;
+      fileInput.click();
+    }
+    if (act === 'view') toggleView(el);
+    if (act === 'delete') {
+      if (ta.value.trim() && !confirm(`Delete the test table ${key || '(unnamed)'}?`)) return;
+      if (key) { delete store.tables[key]; cards.delete(key); save(); }
+      drafts = drafts.filter((d) => d !== el);
+      el.remove();
+      renderTables(analysis);
+      return;
+    }
+    if (act === 'clear') setText(el, '');
+    const cols = (analysis && queryColumns(analysis).get(key)) || [];
+    if (act === 'header') {
       if (!cols.length) { toast('The query doesn\'t name any columns of this table (it may only use *): type a header row'); return; }
       setText(el, withColumns(ta.value, cols));
     }
-    if (b.dataset.act === 'starter') {
+    if (act === 'starter') {
       let text = ta.value;
       let header = inspectTable(text).names;
       if (!header.length) {
@@ -219,21 +430,30 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
       }
       const info = inspectTable(text);
       const rows = starterRows(header, analysis, 3, key);
-      const sep = info.delim === '\t' ? (l) => l.split(',').join('\t') : (l) => l;
+      const sep = info.delim !== ',' ? (l) => l.split(',').join(info.delim) : (l) => l;
       setText(el, text.replace(/\n*$/, '\n') + rows.map(sep).join('\n') + '\n');
     }
-    if (b.dataset.act === 'clear') setText(el, '');
   });
 
+  // Put each card in its list, in order, creating the missing ones.
+  function place(container, wanted) {
+    wanted.forEach((el, i) => { if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null); });
+    for (const el of [...container.children]) if (!wanted.includes(el)) el.remove();
+  }
+
   function renderTables(a) {
+    if (!a) return;
     const tables = sourceTables(a);
     const cols = queryColumns(a);
-    const keep = new Set(tables.map((t) => t.key));
-    for (const [k, el] of cards) if (!keep.has(k)) { el.remove(); cards.delete(k); }
-    tables.forEach((t, i) => {
+    const queryKeys = new Set(tables.map((t) => t.key));
+    const savedOther = Object.keys(store.tables).filter((k) => !queryKeys.has(k)).sort();
+    const want = new Map([...tables.map((t) => [t.key, 'query']), ...savedOther.map((k) => [k, 'other'])]);
+    for (const [k, el] of cards) {
+      if (want.get(k) !== el.dataset.kind) { el.remove(); cards.delete(k); }
+    }
+    const qEls = tables.map((t) => {
       let el = cards.get(t.key);
-      if (!el) { el = card(t); cards.set(t.key, el); }
-      if (listEl.children[i] !== el) listEl.insertBefore(el, listEl.children[i] || null);
+      if (!el) { el = card(t.key, 'query'); cards.set(t.key, el); }
       el.querySelector('.tt-name').textContent = t.label;
       el.querySelector('.tt-full').textContent = t.full === t.label ? '' : t.full;
       const c = cols.get(t.key) || [];
@@ -242,10 +462,20 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
         : '<span class="muted">The query names no columns of this table</span>';
       const ta = el.querySelector('textarea');
       if (!ta.placeholder) ta.placeholder = c.length ? `${csvLine(c)}\n${starterRows(c, a, 1, t.key)[0]}` : 'id,name\n1,first';
-      paintStat(el);
+      return el;
     });
+    place(listEl, qEls);
     if (!tables.length) listEl.innerHTML = '<div class="tt-none">This query reads no tables. Runs work on its literals alone (e.g. SELECT … FROM UNNEST([…])).</div>';
-    else listEl.querySelector('.tt-none')?.remove();
+    const oEls = [...drafts, ...savedOther.map((k) => {
+      let el = cards.get(k);
+      if (!el) { el = card(k, 'other'); cards.set(k, el); }
+      return el;
+    })];
+    place(otherEl, oEls);
+    $('.tt-other-wrap').hidden = !oEls.length;
+    root.querySelector('[data-count="query"]').textContent = tables.length;
+    root.querySelector('[data-count="other"]').textContent = savedOther.length;
+    paintLinks();
     if (tables.length > LIMITS.tables) toast(`This query reads ${tables.length} tables: test runs take up to ${LIMITS.tables}`, 'error');
   }
 
@@ -276,8 +506,10 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery }) {
     if (!confirm('Delete all saved test tables and parameter values (for every query)?')) return;
     store = { tables: {}, params: {} };
     save();
-    for (const el of cards.values()) { el.querySelector('textarea').value = ''; paintStat(el); }
+    for (const el of cards.values()) { el.querySelector('textarea').value = ''; if (!el.querySelector('.tt-grid').hidden) toggleView(el, false); }
+    drafts = [];
     paramsEl.dataset.sig = '';
+    renderTables(analysis);
     if (analysis) renderParams(analysis);
     toast('Test data cleared');
   });

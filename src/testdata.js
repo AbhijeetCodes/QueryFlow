@@ -17,11 +17,15 @@ export const LIMITS = {
 
 // ---- CSV / TSV --------------------------------------------------------------------
 
-/** Parse CSV or TSV (picked from the first line). Quotes may wrap commas, quotes ("") and new lines. */
+// Excel saves CSV with a byte-order mark, and with `;` between values where the
+// decimal separator is a comma.
+const pickDelim = (firstLine) => (firstLine.includes('\t') ? '\t' : firstLine.includes(';') && !firstLine.includes(',') ? ';' : ',');
+
+/** Parse CSV, TSV or semicolon CSV (picked from the first line). Quotes may wrap delimiters, quotes ("") and new lines. */
 export function parseDelimited(text) {
-  const src = String(text ?? '').replace(/\r\n?/g, '\n');
+  const src = String(text ?? '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const firstLine = src.split('\n', 1)[0];
-  const delim = firstLine.includes('\t') ? '\t' : ',';
+  const delim = pickDelim(firstLine);
   const rows = [];
   let row = [];
   let cell = '';
@@ -79,7 +83,47 @@ export function inspectTable(text) {
   return res;
 }
 
-const csvCell = (v) => (/[",\n\t]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+const csvCell = (v) => (/[",;\n\t]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v));
+
+/**
+ * Text from a file or a big paste, ready to be a test table: no byte-order mark,
+ * \n line ends, and at most `maxRows` data rows (the header plus the first rows).
+ * Returns { text, rows, total, truncated }.
+ */
+export function importText(raw, maxRows = LIMITS.rows) {
+  const text = String(raw ?? '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const { rows } = parseDelimited(text);
+  const total = Math.max(0, rows.length - 1);
+  if (total <= maxRows) return { text: text.replace(/\n*$/, '\n'), rows: total, total, truncated: false };
+  // Cut at a line end outside quotes, after the header and maxRows rows.
+  let line = 0;
+  let quoted = false;
+  let cut = text.length;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') quoted = !quoted;
+    else if (c === '\n' && !quoted) {
+      // count only lines with content, as parseDelimited does
+      if (text.slice(text.lastIndexOf('\n', i - 1) + 1, i).trim()) line++;
+      if (line === maxRows + 1) { cut = i + 1; break; }
+    }
+  }
+  return { text: text.slice(0, cut), rows: maxRows, total, truncated: true };
+}
+
+/**
+ * The saved test table for a table the query reads: its exact name, else the
+ * longest saved name that is the end of it (`shop.orders`, then `orders`, for
+ * `proj.shop.orders`). Returns { key, text, exact } or null.
+ */
+export function resolveTableData(data, key) {
+  if (data[key]?.trim()) return { key, text: data[key], exact: true };
+  const hits = Object.keys(data).filter((k) => data[k]?.trim() && k !== key && key.endsWith('.' + k));
+  if (!hits.length) return null;
+  // Two different names of the same length can't both end the key, so the longest is unique.
+  const best = hits.reduce((x, y) => (y.length > x.length ? y : x));
+  return { key: best, text: data[best], exact: false };
+}
 export const csvLine = (cells, delim = ',') => cells.map(csvCell).join(delim);
 
 /** The header line plus data lines with text appended (a new header if there was none). */

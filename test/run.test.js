@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 import { planRun, executePlan } from '../src/runner.js';
 import { translate } from '../src/bq2duck.js';
 import { analyze } from '../src/analyzer.js';
-import { inspectTable, queryColumns, starterRows, parseDelimited } from '../src/testdata.js';
+import { inspectTable, queryColumns, starterRows, parseDelimited, importText, resolveTableData } from '../src/testdata.js';
 
 const require = createRequire(import.meta.url);
 const duckdb = require('@duckdb/duckdb-wasm/dist/duckdb-node-blocking.cjs');
@@ -254,4 +254,30 @@ test('starter ids for a NOT IN table don\'t match the main table', () => {
   const a = analyze('SELECT * FROM `p.d.users` u WHERE u.user_id NOT IN (SELECT user_id FROM `p.d.banned`)', 'bigquery');
   assert.equal(starterRows(['user_id'], a, 1, 'p.d.users')[0], '1');
   assert.equal(starterRows(['user_id'], a, 1, 'p.d.banned')[0], '101');
+});
+
+test('a saved table named by its short name serves the full table name', async () => {
+  const r = await run('SELECT COUNT(*) AS n FROM `proj.shop.orders`', { orders: ORDERS });
+  assert.deepEqual(objs(r), [{ n: 4 }]);
+  assert.equal(resolveTableData({ 'shop.orders': 'a\n1', orders: 'a\n1' }, 'proj.shop.orders').key, 'shop.orders');
+  assert.deepEqual(resolveTableData({ 'a.orders': 'x\n1', 'b.orders': 'x\n1' }, 'p.c.orders'), null);
+  assert.equal(resolveTableData({ 'a.orders': 'x\n1', 'b.orders': 'x\n1' }, 'p.a.orders').key, 'a.orders');
+  assert.equal(resolveTableData({ 'proj.shop.orders': 'x\n1', orders: 'y\n2' }, 'proj.shop.orders').exact, true);
+});
+
+test('CSV saved by Excel: byte-order mark, semicolons, CRLF', async () => {
+  const excel = '\uFEFFid;name;amount\r\n1;Ana;"1,5"\r\n2;Ben;2\r\n';
+  assert.equal(parseDelimited(excel).delim, ';');
+  assert.deepEqual(inspectTable(excel).names, ['id', 'name', 'amount']);
+  const r = await run('SELECT id, name FROM `p.d.people` ORDER BY id', { 'p.d.people': excel });
+  assert.deepEqual(objs(r), [{ id: 1, name: 'Ana' }, { id: 2, name: 'Ben' }]);
+});
+
+test('importing a big file keeps the header and the first rows', () => {
+  const big = 'id,note\n' + Array.from({ length: 1500 }, (_, i) => `${i},"line\nbreak"`).join('\n');
+  const r = importText(big);
+  assert.equal(r.truncated, true);
+  assert.equal(r.total, 1500);
+  assert.equal(inspectTable(r.text).rows, 1000);
+  assert.equal(importText('a\r\n1\r\n').text, 'a\n1\n');
 });

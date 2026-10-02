@@ -8,7 +8,7 @@
 // functions and variables never leak into the next run.
 
 import { translate, duckType, tableKey } from './bq2duck.js';
-import { inspectTable, LIMITS } from './testdata.js';
+import { inspectTable, resolveTableData, LIMITS } from './testdata.js';
 
 const quoteId = (s) => `"${String(s).replace(/"/g, '""')}"`;
 const sqlStr = (s) => `'${String(s).replace(/'/g, "''")}'`;
@@ -34,7 +34,9 @@ export function planRun(src, { data = {}, params = {} } = {}) {
   const setup = [];
   if (translation.tables.length > LIMITS.tables) problems.push({ message: `This query reads ${translation.tables.length} tables: test runs take up to ${LIMITS.tables}` });
   translation.tables.forEach((t, i) => {
-    const text = data[t.key] ?? '';
+    const found = resolveTableData(data, t.key);
+    const text = (found?.text ?? '').replace(/^\uFEFF/, '');
+    t.dataFrom = found?.key ?? null;
     const info = inspectTable(text);
     if (info.empty) { problems.push({ message: `No test data for ${t.full} yet`, table: t.key }); return; }
     if (info.error) { problems.push({ message: `${t.full}: ${info.error}`, table: t.key }); return; }

@@ -937,3 +937,22 @@ button.s-src:hover { text-decoration: underline; }
 .res-sql-tools { margin: 6px 0; }
 .res-sql pre { margin: 0; padding: 8px 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; font: 11.5px/1.5 var(--mono); white-space: pre; overflow: auto; max-height: 320px; }
 @container (max-width: 460px) { .run-intro { display: none; } .run-target { max-width: 130px; } }
+.tt-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 4px; }
+.tt-drop-hint { font-size: 11px; color: var(--text-faint); }
+.tt-h { margin: 14px 0 6px; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); display: flex; gap: 6px; align-items: center; }
+.tt-hint { margin: -2px 0 8px; font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+.tt-rename {
+  flex: 1; min-width: 0; height: 24px; border: 1px solid transparent; border-radius: 5px; background: transparent;
+  font: 600 12.5px var(--mono); color: var(--c-table); padding: 0 5px; margin-left: -5px;
+}
+.tt-rename:hover { border-color: var(--border); }
+.tt-rename:focus { outline: none; border-color: var(--accent); background: var(--editor-bg); }
+.tt-rename::placeholder { font-weight: 400; color: var(--text-faint); }
+.tt-other .tt-cols:empty { display: none; }
+.tt-uses { margin: -2px 0 6px; font-size: 11.5px; color: var(--text-muted); }
+.tt-uses .link { font-size: 11.5px; }
+.tt-grid { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--editor-bg); }
+.tt-grid .res-grid th, .tt-grid .res-grid td { padding: 3px 8px; max-width: 240px; }
+.tt-grid-empty, .tt-grid-more { padding: 6px 8px; font-size: 11px; color: var(--text-muted); }
+.run-data.dropping { outline: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: -6px; background: var(--accent-soft); }
+.tt.drop-on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

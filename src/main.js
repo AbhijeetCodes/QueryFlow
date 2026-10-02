@@ -168,10 +168,28 @@ function loadRun(el = runEl()) {
   }));
 }
 async function runQuery(target) {
+  setMView('panel');
   graph.showTab('run');
   if (!isBigQuery()) { toast('Running needs the BigQuery dialect: switch it next to the logo'); return; }
   (await loadRun()).run(target);
 }
+
+// ---- phones: one view at a time ---------------------------------------------------
+// Below 820px the CSS shows only the editor, the values panel or the Steps / Graph / Run panel,
+// whichever body[data-mview] names; the bottom bar switches between them.
+const mnav = document.querySelector('.m-nav');
+let panelTab = 'graph';
+function setMView(v) {
+  document.body.dataset.mview = v;
+  mnav.querySelectorAll('button').forEach((b) =>
+    b.classList.toggle('active', b.dataset.mview === v && (v !== 'panel' || b.dataset.tab === panelTab)));
+}
+mnav.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-mview]');
+  if (!b) return;
+  setMView(b.dataset.mview);
+  if (b.dataset.tab) graph.showTab(b.dataset.tab);
+});
 
 // Picking a step in the graph / Steps view narrows the filter panel to that
 // step; picking a step tag in the filter panel selects it in the graph.
@@ -182,6 +200,7 @@ const graph = createGraphPanel(document.getElementById('graph'), {
   onPreview: (id) => previewCte(id),
   onRunTab: (el) => loadRun(el).then((p) => p.update(analyzeDoc(view.state.doc))),
   onRun: (id) => runQuery(id),
+  onTab: (name) => { panelTab = name; setMView(document.body.dataset.mview || 'sql'); },
 });
 
 // ---- preview a CTE -------------------------------------------------------------

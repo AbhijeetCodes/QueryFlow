@@ -222,7 +222,7 @@ function lineageOf(id, nodes) {
   return set;
 }
 
-export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, onRun }) {
+export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, onRun, onTab }) {
   root.innerHTML = `
     <div class="graph-head">
       <div class="tabs" role="tablist">
@@ -390,11 +390,12 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
     }
   }, { passive: false });
 
-  // Safari sends pinch as gesture events rather than ctrl+wheel.
+  // Safari sends trackpad pinch as gesture events rather than ctrl+wheel. On iOS a two-finger touch
+  // fires them too, alongside the pointer events below; those already handle it, so skip them then.
   let gestureK = null;
-  svg.addEventListener('gesturestart', (e) => { e.preventDefault(); gestureK = { ...tf }; });
+  svg.addEventListener('gesturestart', (e) => { e.preventDefault(); gestureK = pointers.size > 1 ? null : { ...tf }; });
   svg.addEventListener('gesturechange', (e) => {
-    if (!gestureK) return;
+    if (!gestureK || pointers.size > 1) return;
     e.preventDefault();
     const r = svg.getBoundingClientRect();
     userMoved = true;
@@ -403,31 +404,78 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
   });
   svg.addEventListener('gestureend', () => { gestureK = null; });
 
-  let drag = null;
+  // Drag pans; two fingers pinch-zoom and pan around their midpoint. A touch drag may start on a node
+  // (they cover most of a phone-sized view); a mouse drag from a node is left alone.
+  const pointers = new Map(); // pointerId -> { x, y } in svg coordinates
+  let drag = null; // the gesture's start: pointer positions and the transform then
+  let suppressClick = false; // the finger moved, so the tap that ends it is not a click on a node
+  let lastTap = null; // { t, x, y } of the last touch tap on the background, for double-tap zoom
+  let lastPointer = 'mouse';
+  const local = (e) => { const r = svg.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  function startGesture() {
+    const pts = [...pointers.values()];
+    drag = { pts, tf: { ...tf }, moved: drag?.moved || false };
+  }
   svg.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('.node')) return;
+    lastPointer = e.pointerType;
+    if (e.pointerType === 'mouse' && (e.button !== 0 || e.target.closest('.node'))) return;
     stopAnim();
     svg.focus({ preventScroll: true }); // so the zoom keys work
-    drag = { x: e.clientX, y: e.clientY, tx: tf.x, ty: tf.y, moved: false };
-    svg.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, local(e));
+    if (pointers.size > 2) return;
+    if (pointers.size === 1) suppressClick = false;
+    startGesture();
+    if (!e.target.closest('.node')) svg.setPointerCapture(e.pointerId);
   });
   svg.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    const dx = e.clientX - drag.x;
-    const dy = e.clientY - drag.y;
-    if (Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; userMoved = true; }
-    tf.x = drag.tx + dx;
-    tf.y = drag.ty + dy;
+    if (!drag || !pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, local(e));
+    const [a, b] = [...pointers.values()];
+    const [a0, b0] = drag.pts;
+    if (b && b0) {
+      // Scale by the change in finger spread, then move so the start midpoint follows the current one.
+      const d0 = Math.hypot(b0.x - a0.x, b0.y - a0.y) || 1;
+      const m0 = { x: (a0.x + b0.x) / 2, y: (a0.y + b0.y) / 2 };
+      const z = zoomedTf(Math.hypot(b.x - a.x, b.y - a.y) / d0, m0.x, m0.y, drag.tf);
+      tf = { k: z.k, x: z.x + (a.x + b.x) / 2 - m0.x, y: z.y + (a.y + b.y) / 2 - m0.y };
+      drag.moved = true;
+    } else {
+      const dx = a.x - a0.x;
+      const dy = a.y - a0.y;
+      if (!drag.moved && Math.abs(dx) + Math.abs(dy) <= (e.pointerType === 'mouse' ? 3 : 8)) return;
+      drag.moved = true;
+      tf = { ...drag.tf, x: drag.tf.x + dx, y: drag.tf.y + dy };
+    }
+    userMoved = true;
+    suppressClick = true;
     applyTf();
   });
-  svg.addEventListener('pointerup', (e) => {
-    if (drag && !drag.moved && !e.target.closest('.node')) select(null);
+  function endPointer(e) {
+    if (!pointers.has(e.pointerId)) return;
+    const at = pointers.get(e.pointerId);
+    pointers.delete(e.pointerId);
+    if (pointers.size) { startGesture(); return; } // one finger lifted mid-pinch: keep panning with the other
+    const tapped = e.type === 'pointerup' && drag && !drag.moved;
     drag = null;
-  });
+    if (!tapped || e.target.closest('.node')) return;
+    select(null);
+    if (e.pointerType !== 'touch') return;
+    // Double-tap the background to zoom in there (dblclick is unreliable for touch).
+    const now = e.timeStamp;
+    if (lastTap && now - lastTap.t < 350 && Math.hypot(at.x - lastTap.x, at.y - lastTap.y) < 30) {
+      lastTap = null;
+      zoomAt(2, at.x, at.y, { animate: true });
+    } else lastTap = { t: now, ...at };
+  }
+  svg.addEventListener('pointerup', endPointer);
+  svg.addEventListener('pointercancel', endPointer);
+  svg.addEventListener('click', (e) => {
+    if (suppressClick) { e.stopPropagation(); suppressClick = false; }
+  }, true);
 
   // Double-click the background to zoom in there (shift: out). Double-click on a node isolates its lineage.
   svg.addEventListener('dblclick', (e) => {
-    if (e.target.closest('.node')) return;
+    if (e.target.closest('.node') || lastPointer === 'touch') return; // touch: see the double-tap above
     const r = svg.getBoundingClientRect();
     zoomAt(e.shiftKey ? 1 / 2 : 2, e.clientX - r.left, e.clientY - r.top, { animate: true });
   });
@@ -489,6 +537,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
     root.closest('.right')?.classList.toggle('run-mode', name === 'run');
     root.querySelector('.graph-tools').style.visibility = name === 'graph' ? 'visible' : 'hidden';
     try { localStorage.setItem('queryflow.tab', name); } catch { /* ignore */ }
+    onTab?.(name);
     if (name === 'graph' && graphStale && analysis) { graphStale = false; drawGraph(analysis); }
     if (name === 'graph') setTimeout(() => { if (!userMoved) fit(); }, 0);
   }

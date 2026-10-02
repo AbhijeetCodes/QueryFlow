@@ -6,14 +6,16 @@ const MOD = isMac ? '⌘' : 'Ctrl+';
 
 // Phones and tablets get touch wording (or skip the line) instead of keyboard shortcuts.
 const touch = globalThis.matchMedia?.('(hover: none)').matches;
+// Phone-sized screens (the one-view-at-a-time layout in styles.css) also get a note about it.
+const small = globalThis.matchMedia?.('(max-width: 820px)').matches;
 
-// [title, text, text on touch screens (null: leave the line out)]
+// [title, text, text on touch screens (null: leave the line out; undefined: same text)]
 const FEATURES = [
   ['Format and lint', `${MOD}⇧F tidies the query; warnings catch joins that change the numbers.`,
     'the Format button tidies the query; warnings catch joins that change the numbers.'],
   ['Graph and Steps', 'how the tables and CTEs feed each other.'],
   ['Values in one place', 'edit variables, filter values and date windows on the right.',
-    'edit variables, filter values and date windows in the panel below the editor.'],
+    small ? 'edit variables, filter values and date windows in the Values view.' : undefined],
   ['Navigate like code', 'hover a name, F12 to jump to it, F2 to rename it.', null],
   ['Run on test data', 'try a BigQuery query on a few rows you type in.'],
   ['Private', 'nothing leaves your browser, not even with share links.'],
@@ -33,6 +35,7 @@ export function showWelcome() {
       </button>
     </div>
     <p class="welcome-sub">A SQL editor for BigQuery, PostgreSQL and MySQL that runs in your browser.</p>
+    ${small ? '<p class="welcome-note"><b>Best viewed on a desktop.</b> On a phone you can still read, check and run queries: switch between them with the bar at the bottom.</p>' : ''}
     <ul class="welcome-list">
       ${lines.map(([b, t]) => `<li><b>${b}:</b> ${t}</li>`).join('')}
     </ul>

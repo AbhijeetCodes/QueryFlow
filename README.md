@@ -259,21 +259,19 @@ On phones the views switch from a bar at the bottom, one at a time, and the grap
 
 ## Keyboard
 
-On Windows and Linux, read ⌘ as Ctrl and ⌥ as Alt.
-
-| Keys | Action |
-|---|---|
-| ⌘⇧F or ⌘S | Format |
-| ⌘Enter | Run on the test tables (Run tab, BigQuery) |
-| ⌘⇧Enter | Copy SQL (reviews the diff first if you've edited the pasted query) |
-| ⌘⌥Enter | Copy a preview query for the CTE at the cursor |
-| F12 or ⌘-click | Go to definition |
-| ⇧F12 | Next use of the name under the cursor |
-| F2 | Rename everywhere |
-| ⌘O / ⌘⇧S | Open a `.sql` file / save as `.sql` |
-| ⌘⇧M | List all problems |
-| ⌘Z / ⌘⇧Z | Undo / redo, including edits made from the side panels |
-| ⌘F | Find and replace |
+| Mac | Windows / Linux | Action |
+|---|---|---|
+| ⌘⇧F or ⌘S | Ctrl+Shift+F or Ctrl+S | Format |
+| ⌘Enter | Ctrl+Enter | Run on the test tables (Run tab, BigQuery) |
+| ⌘⇧Enter | Ctrl+Shift+Enter | Copy SQL (reviews the diff first if you've edited the pasted query) |
+| ⌘⌥Enter | Ctrl+Alt+Enter | Copy a preview query for the CTE at the cursor |
+| F12 or ⌘-click | F12 or Ctrl+click | Go to definition |
+| ⇧F12 | Shift+F12 | Next use of the name under the cursor |
+| F2 | F2 | Rename everywhere |
+| ⌘O / ⌘⇧S | Ctrl+O / Ctrl+Shift+S | Open a `.sql` file / save as `.sql` |
+| ⌘⇧M | Ctrl+Shift+M | List all problems |
+| ⌘Z / ⌘⇧Z | Ctrl+Z / Ctrl+Y (also Ctrl+Shift+Z on Linux) | Undo / redo, including edits made from the side panels |
+| ⌘F | Ctrl+F | Find and replace |
 
 In Chrome on Windows and Linux, F12 opens the developer tools; use Ctrl-click or the hover card's *Definition* button instead.
 

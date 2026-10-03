@@ -11,6 +11,8 @@ hosted for free as a static site. See README.md for features, layout and hosting
   BigQuery queries on small test tables with DuckDB-WASM, served from `dist/` itself and loaded
   only on the first run (extension autoloading is switched off, so it never fetches anything).
   Its `.wasm` is ~36 MB (~8 MB gzipped), over Cloudflare Pages' 25 MB per-file limit.
+  The one outside request is GoatCounter's anonymous count (script in `index.html`, actions via
+  `track()` in `src/stats.js`): event names only, never SQL, and no other trackers.
 - **It will be public.** Keep company-internal names, datasets, endpoints and URLs out of
   code, sample queries and docs.
 - **Light and fast.** It's for reading and editing 1,000+ line queries. Avoid new dependencies
@@ -50,6 +52,8 @@ npm run build    # static site in dist/ (relative paths via base: './')
 - `src/sample.js`: the example (a short Pokédex query per dialect, on the practice tables). The editor
   starts empty; this loads only from *Load the example* (the empty editor's card or the ⋯ menu).
 - `src/main.js`: wiring (toolbar, status bar, themes, resizable panes)
+- `src/stats.js`: `track(name)` counts an action on GoatCounter (dashboard kept private). Repo
+  traffic history is saved outside this public repo, in a private `QueryFlow-stats` repo.
 - Run tab (all lazy-loaded): `src/bq2duck.js` translates BigQuery to DuckDB token by token
   (keeps line numbers; points table names at test tables); `src/testdata.js` parses the CSV / TSV
   test tables, holds the size limits and guesses columns / starter rows from the analysis;

@@ -10,6 +10,7 @@ import { DIALECTS, dialectOf, currentDialect, setCurrentDialect, detectDialect }
 import { diffLines, diffStats } from './diff.js';
 import { previewSql, cteAt } from './symbols.js';
 import { encodeShare, decodeShare } from './share.js';
+import { track } from './stats.js';
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem('queryflow.' + k); return v === null ? d : v; } catch { return d; } },
@@ -59,6 +60,7 @@ async function formatDoc(view, { quiet = false, note = '' } = {}) {
   while (b < src.length - a && b < out.length - a && src[src.length - 1 - b] === out[out.length - 1 - b]) b++;
   view.dispatch({ changes: { from: a, to: src.length - b, insert: out.slice(a, out.length - b) }, userEvent: 'format' });
   toast(note || 'Formatted · ⌘Z to undo');
+  if (!quiet) track('format/' + currentDialect());
   return true;
 }
 
@@ -85,6 +87,7 @@ function copyAll(view) {
     return;
   }
   writeClipboard(text, `Copied ${lineCount(text)} lines, ready to paste into ${engine()}`);
+  track('copy/' + currentDialect());
 }
 
 // ---- editor ----------------------------------------------------------------
@@ -158,6 +161,7 @@ const view = createEditor(document.getElementById('editor'), {
     if (before === 0 || inserted >= after * 0.9) {
       setTimeout(async () => {
         const switched = await detectFor(view.state.doc.toString());
+        track('paste/' + currentDialect());
         const formatted = formatOnPaste && await formatDoc(view, { quiet: true, note: switched + 'Pasted & formatted · ⌘Z to see the original' });
         if (switched && !formatted) toast(switched + 'pick another above if that is wrong');
         setOriginal(view.state.doc.toString());
@@ -259,6 +263,7 @@ async function readFile(file) {
   try { text = await file.text(); } catch { toast(`Couldn't read ${file.name}`, 'error'); return; }
   if (text.includes('\u0000')) { toast(`${file.name} doesn't look like a text file`, 'error'); return; }
   store.set('fileName', file.name);
+  track('open-file');
   await loadQuery(text, `Opened ${file.name}${formatOnPaste ? ' & formatted' : ''} · ⌘Z to undo`);
 }
 function saveFile() {
@@ -281,6 +286,7 @@ async function shareLink() {
   let hash;
   try { hash = await encodeShare(text, currentDialect()); } catch { toast('This browser cannot build share links', 'error'); return; }
   const url = location.href.split('#')[0] + hash;
+  track('share/' + currentDialect());
   const kb = Math.round(url.length / 1024);
   await writeClipboard(url, url.length > 8000
     ? `Link copied (${kb} KB). Some chat apps cut links this long; Save as .sql is safer.`
@@ -293,6 +299,7 @@ async function openShared() {
   history.replaceState(null, '', location.href.split('#')[0]);
   const switched = shared.dialect !== currentDialect() && DIALECTS[shared.dialect];
   if (switched) await setDialect(shared.dialect, { quiet: true });
+  track('open-shared/' + currentDialect());
   if (shared.text === view.state.doc.toString()) { if (switched) toast(`Switched to ${engine()} for the shared query`); return; }
   await loadQuery(shared.text, `Opened the shared ${switched ? engine() + ' ' : ''}query · ⌘Z brings back yours`, { format: false, detect: false });
 }
@@ -396,6 +403,7 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
     }
     if (!text.trim()) { toast('Clipboard is empty', 'error'); return; }
     await loadQuery(text, 'Pasted & formatted · ⌘Z to see the original', { format: true });
+    track('paste/' + currentDialect());
   }
   if (act === 'open') openFile();
   if (act === 'save') saveFile();
@@ -477,6 +485,7 @@ async function loadSample({ quiet = false } = {}) {
   view.focus();
   const tables = (await loadRun()).loadTables(SAMPLE_TABLES, 'practice data');
   if (quiet) return;
+  track('example/' + currentDialect());
   const n = Object.keys(SAMPLE_TABLES).length;
   toast(!tables ? 'Loaded the example query · ⌘Z to undo'
     : isBigQuery() ? `Loaded the example and its ${n} test tables · ⌘Enter runs it`

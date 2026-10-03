@@ -4,6 +4,7 @@
 
 import { EditorView } from '@codemirror/view';
 import { previewSql } from './symbols.js';
+import { track } from './stats.js';
 import { tableKey } from './bq2duck.js';
 import { planRun, executePlan, planText } from './runner.js';
 import { PRACTICE_TABLES, PRACTICE_QUERIES, PRACTICE_NOTE } from './practice.js';
@@ -874,6 +875,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       setStatus('Not run', 'error');
       return;
     }
+    track('run');
     const engine = await import('./engine.js');
     let stopped = false;
     running = { stop: () => { stopped = true; engine.stop(); } };

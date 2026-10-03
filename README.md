@@ -123,8 +123,10 @@ The query is compressed into the link's `#hash`, which browsers never send to th
 
 ## Private by design
 
-Everything runs client-side from the SQL text: no server, no login, no database connection, no
-tracking. Your query is kept in your browser's `localStorage`. A share link
+Everything runs client-side from the SQL text: no server, no login, no database connection. Your
+query is kept in your browser's `localStorage`. The one thing the site sends is an anonymous count
+to [GoatCounter](https://www.goatcounter.com/) (no cookies): the page view and the name of an action
+such as `format/bigquery` or `run`, never your SQL. A share link
 carries the query inside the link itself, and the test-run engine is served with the site and
 never contacts anything else. That also makes QueryFlow a plain static site you can host anywhere
 for free.

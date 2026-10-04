@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { planRun, executePlan } from '../src/runner.js';
+import { planRun, executePlan, loadFiles, forgetFile, cleanError } from '../src/runner.js';
 import { translate } from '../src/bq2duck.js';
 import { analyze } from '../src/analyzer.js';
 import { inspectTable, queryColumns, starterRows, parseDelimited, importText, resolveTableData } from '../src/testdata.js';
@@ -13,6 +13,7 @@ const duckdb = require('@duckdb/duckdb-wasm/dist/duckdb-node-blocking.cjs');
 
 let db;
 let conn;
+const loaded = new Map(); // files kept in memory, loaded once into this DuckDB
 async function driver() {
   if (!db) {
     const wasm = require.resolve('@duckdb/duckdb-wasm/dist/duckdb-eh.wasm');
@@ -25,6 +26,8 @@ async function driver() {
     open: async () => { conn = db.connect(); },
     close: async () => { conn.close(); },
     registerFile: async (name, text) => db.registerFileText(name, text),
+    registerBlob: async (name, file) => db.registerFileBuffer(name, new Uint8Array(await file.arrayBuffer())),
+    loaded,
     dropFile: async (name) => db.dropFile(name),
     query: async (sql) => conn.query(sql),
     stream: async (sql, maxRows) => {
@@ -351,4 +354,41 @@ test('a file over the character limit keeps the rows that fit; table names as SQ
   assert.equal(sqlName('select'), '`select`');
   const res = await run('SELECT COUNT(*) AS n FROM `my-data`', { 'my-data': 'a\n1\n2\n' });
   assert.deepEqual(objs(res), [{ n: 2 }]);
+});
+
+test('a big file kept in memory: loaded once, read whole by every run, under its short name', async () => {
+  const lines = ['order_id,amount,status'];
+  for (let i = 1; i <= 5000; i++) lines.push(`${i},${i % 10},${i % 3 ? 'paid' : 'refunded'}`);
+  lines.push('5001,2.5,paid'); // a late decimal: the column's type comes from the whole file
+  const text = lines.join('\n');
+  const head = text.slice(0, text.indexOf('\n', 2000));
+  const big = { id: 'test1', name: 'orders.csv', file: new Blob([text]), info: inspectTable(head), status: 'ready' };
+  const d = await driver();
+  await d.open();
+  const [{ rows }] = await loadFiles(d, [{ id: big.id, name: 'qf_file_test1.csv', file: big.file, info: big.info }]);
+  await d.close();
+  assert.equal(rows, 5001);
+  const sql = 'SELECT status, COUNT(*) AS n, SUM(amount) AS total FROM `p.shop.orders` GROUP BY status ORDER BY status';
+  const want = [{ status: 'paid', n: 3335, total: 14999.5 }, { status: 'refunded', n: 1666, total: 7503 }];
+  assert.deepEqual(objs(await run(sql, { orders: big })), want);
+  assert.equal(loaded.size, 1);
+  assert.deepEqual(objs(await run(sql, { orders: big })), want); // the second run reads the same table
+  // the run's own database is gone; the file's table stays for the next run
+  assert.deepEqual(objs(await run('SELECT COUNT(*) AS n FROM orders', { orders: big })), [{ n: 5001 }]);
+  await d.open();
+  await forgetFile(d, 'test1');
+  await d.close();
+  assert.equal(loaded.size, 0);
+});
+
+test('a file kept in memory is gone after a reload, and says so', () => {
+  const { problems } = planRun('SELECT * FROM orders', { data: { orders: { id: 'x', name: 'orders.csv', status: 'gone' } } });
+  assert.match(problems[0].message, /orders\.csv was kept in this tab's memory only/);
+  assert.equal(problems[0].table, 'orders');
+});
+
+test('a DuckDB error reported as JSON reads as its message', () => {
+  const e = cleanError(new Error(JSON.stringify({ exception_type: 'Parser', exception_message: 'syntax error at or near "SELECT"\n\nLINE 3: SELECT\n ^', error_subtype: 'SYNTAX_ERROR' })));
+  assert.equal(e.text, 'Parser Error · syntax error at or near "SELECT"');
+  assert.equal(e.rel, 3);
 });

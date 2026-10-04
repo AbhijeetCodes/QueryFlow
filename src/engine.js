@@ -8,6 +8,11 @@ import workerUrl from '@duckdb/duckdb-wasm/dist/duckdb-browser-eh.worker.js?url'
 
 let dbPromise = null;
 let worker = null;
+// Files kept in memory that this DuckDB has loaded (runner.js loadFiles): id -> Promise.
+let loaded = new Map();
+// A terminated worker never answers, so whatever awaits it also waits for stop().
+let onStop;
+let stopped = new Promise((r) => { onStop = r; });
 
 async function boot() {
   if (typeof WebAssembly !== 'object') throw new Error('This browser has no WebAssembly, so test runs are not available');
@@ -37,7 +42,13 @@ export function stop() {
   worker?.terminate();
   worker = null;
   dbPromise = null;
+  loaded = new Map(); // the next DuckDB loads them again from the File objects
+  onStop();
+  stopped = new Promise((r) => { onStop = r; });
 }
+
+/** Resolves when stop() is next called: race it against work on the current worker. */
+export const whenStopped = () => stopped;
 
 /** A driver for runner.js's executePlan(). */
 export async function createDriver() {
@@ -47,6 +58,9 @@ export async function createDriver() {
     open: async () => { conn = await db.connect(); },
     close: async () => { await conn?.close(); conn = null; },
     registerFile: (name, text) => db.registerFileText(name, text),
+    // DuckDB reads a picked or dropped file in place, in its worker: no copy, no upload.
+    registerBlob: (name, file) => db.registerFileHandle(name, file, duckdb.DuckDBDataProtocol.BROWSER_FILEREADER, true),
+    loaded,
     dropFile: (name) => db.dropFile(name),
     query: (sql) => conn.query(sql),
     async stream(sql, maxRows) {

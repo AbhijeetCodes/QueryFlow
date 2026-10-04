@@ -310,7 +310,7 @@ async function queryFiles(files) {
   if (!done.length) return;
   track(fresh ? 'csv/query' : 'csv/add');
   const n = (x) => x.toLocaleString();
-  const rows = (d) => (d.truncated ? `${n(d.rows)} of its ${n(d.total)} rows` : `${n(d.rows)} row${d.rows === 1 ? '' : 's'}`);
+  const rows = (d) => (d.truncated ? `${n(d.rows)} of its ${n(d.total)} rows` : `${n(d.rows)} row${d.rows === 1 ? '' : 's'}${d.mem ? ', in memory' : ''}`);
   if (!fresh) {
     // A file named like a table the query reads fills it; say how to query any other.
     const loose = done.filter((d) => !d.query);
@@ -318,8 +318,10 @@ async function queryFiles(files) {
     return;
   }
   const [d, ...more] = done;
-  const lines = [`-- ${d.file} is the table ${d.key} (${rows(d)}).`];
+  const lines = [`-- ${d.file} is the table ${d.key} (${rows(d).replace(', in memory', '')}).`];
   if (more.length) lines.push(`-- Also loaded: ${more.map((m) => m.key).join(', ')}.`);
+  // A file too big for a saved test table stays in this tab's memory only.
+  if (done.some((x) => x.mem)) lines.push('-- Big files stay in this tab\'s memory only (not saved): add them again after a reload.');
   lines.push(`-- ${touch ? 'The Run button' : runKey} runs the query again, here in your browser.`);
   const sql = `${lines.join('\n')}\nSELECT *\nFROM ${d.sql}\nLIMIT 100;\n`;
   // Test runs read BigQuery SQL.

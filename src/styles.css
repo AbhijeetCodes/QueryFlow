@@ -1016,6 +1016,15 @@ button.s-src:hover { text-decoration: underline; }
 .tt-uses .link { font-size: 11.5px; }
 .tt-grid { flex: 1; min-height: 160px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--editor-bg); }
 .tt-grid .res-grid th, .tt-grid .res-grid td { padding: 3px 8px; max-width: 240px; }
+/* A file kept in memory: what it is and its first rows, in place of the text. */
+.tt-file { font-size: 12px; color: var(--text); }
+.tt:not(.is-file) .tt-file { display: none; }
+.tt.is-file .tt-text, .tt.is-file .tt-grid, .tt.is-file [data-act="header"], .tt.is-file [data-act="starter"], .tt.is-file [data-act="view"], .tt.is-file .tt-drop-hint { display: none; }
+.tt-file p { margin: 0 0 6px; }
+.tt-file .muted { color: var(--text-muted); font-size: 11.5px; }
+.tt-file-err { color: var(--error); font-family: var(--mono); font-size: 11.5px; }
+.tt-file-grid { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--editor-bg); }
+.tt-file-grid .res-grid th, .tt-file-grid .res-grid td { padding: 3px 8px; max-width: 240px; }
 .tt-grid-empty, .tt-grid-more { padding: 6px 8px; font-size: 11px; color: var(--text-muted); }
 .t-testdata { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 11.5px; color: var(--text-muted); }
 
@@ -1028,6 +1037,7 @@ button.s-src:hover { text-decoration: underline; }
 }
 .rt-chip span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rt-chip small { font: 10.5px var(--sans); color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rt-chip.mem:not(.warn) { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); } /* a file kept in this tab's memory, not saved */
 .rt-chip.warn { border-style: dashed; }
 .rt-chip.warn small { color: var(--warning); }
 .rt-chip.error small { color: var(--error); }

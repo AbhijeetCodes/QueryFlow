@@ -6,19 +6,20 @@ import { EditorView } from '@codemirror/view';
 import { previewSql } from './symbols.js';
 import { track } from './stats.js';
 import { tableKey } from './bq2duck.js';
-import { planRun, executePlan, planText } from './runner.js';
+import { planRun, executePlan, planText, loadFiles, forgetFile, cleanError } from './runner.js';
 import { PRACTICE_TABLES, PRACTICE_QUERIES, PRACTICE_NOTE } from './practice.js';
 import { LIMITS, inspectTable, queryColumns, starterRows, withColumns, csvLine, importText, resolveTableData, parseDelimited, sqlName } from './testdata.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`;
+const fileSize = (n) => (n >= 1e6 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
 const STORE_KEY = 'queryflow.testdata';
 
 function loadStore() {
   try {
     const v = JSON.parse(localStorage.getItem(STORE_KEY) || '{}');
-    return { tables: v.tables || {}, params: v.params || {}, cut: v.cut || {} };
-  } catch { return { tables: {}, params: {}, cut: {} }; }
+    return { tables: v.tables || {}, params: v.params || {}, cut: v.cut || {}, files: v.files || {} };
+  } catch { return { tables: {}, params: {}, cut: {}, files: {} }; }
 }
 
 // ---- formatting result values (Arrow values from DuckDB) ---------------------------
@@ -120,7 +121,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       <header class="tt-dhead">
         <div>
           <h2 id="tt-title">Test tables</h2>
-          <p class="tt-dsub">Small tables kept in this browser. The query runs on them with DuckDB, here: nothing is uploaded.</p>
+          <p class="tt-dsub">Small tables are saved in this browser; a bigger file stays whole in this tab's memory. The query runs on them with DuckDB, here: nothing is uploaded.</p>
         </div>
         <button class="icon-btn" data-act="close" title="Close (Esc)" aria-label="Close">×</button>
       </header>
@@ -136,7 +137,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
         <div class="tt-main"></div>
       </div>
       <footer class="tt-dfoot">
-        <span class="tt-tip">Paste cells from Excel or Sheets, or CSV / TSV. Up to ${LIMITS.rows.toLocaleString()} rows and ${LIMITS.cols} columns. <code>id:INT64</code> in the header sets a type.</span>
+        <span class="tt-tip">Paste cells from Excel or Sheets, or CSV / TSV. Up to ${LIMITS.rows.toLocaleString()} rows and ${LIMITS.cols} columns (upload a bigger file). <code>id:INT64</code> in the header sets a type.</span>
         <span class="spacer"></span>
         <button class="link" data-act="clear-all" title="Delete every saved test table and parameter value">Clear all</button>
         <button class="btn" data-act="close">Done</button>
@@ -152,6 +153,16 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   let importTarget = null; // a table's key, or null to match files to tables by name
 
   let store = loadStore();
+  // Files too big for a test table stay whole in this tab's memory, never saved and
+  // never uploaded: tableKey -> { id, name, size, file, info, head, rows, status, error }.
+  // store.files keeps only each one's name and size, so after a reload its table can
+  // say which file to add again (status 'gone').
+  const mem = new Map();
+  for (const [k, f] of Object.entries(store.files)) mem.set(k, { id: null, name: f.name, size: f.size, status: 'gone' });
+  let memSeq = 0;
+  // Saved text and files kept in memory, for resolveTableData() and planRun().
+  const allData = () => { const d = { ...store.tables }; for (const [k, m] of mem) d[k] = m; return d; };
+  const hasData = (key) => !!(store.tables[key] ?? '').trim() || (mem.has(key) && mem.get(key).status !== 'gone');
   let analysis = null;
   let running = null; // { stop() }
   let lastPlan = null;
@@ -192,7 +203,15 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   const cutOf = (key) => (key && store.tables[key]?.trim() && store.cut[key]) || null;
   const cutText = (c) => `the first ${c.rows.toLocaleString()} of ${plural(c.total, 'row')} of ${c.file}`;
 
+  function memStat(m, short) {
+    if (m.status === 'gone') return { text: short ? 'add again' : 'add the file again', cls: 'warn' };
+    if (m.status === 'error') return { text: short ? '!' : m.error, cls: 'error' };
+    if (m.status === 'loading') return { text: short ? 'loading…' : `loading ${m.name}…`, cls: '' };
+    return short ? { text: plural(m.rows, 'row'), cls: 'ok' } : { text: `${plural(m.rows, 'row')} · ${plural(m.info.names.length, 'column')} · in memory`, cls: '' };
+  }
+
   function statText(text, from, key) {
+    if (mem.has(key)) return memStat(mem.get(key), false);
     const info = inspectTable(text);
     if (info.empty) return from ? { text: `uses ${from}`, cls: '' } : { text: 'no rows yet', cls: 'warn' };
     if (info.error) return { text: info.error, cls: 'error' };
@@ -201,6 +220,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     return { text: `${plural(info.rows, 'row')} · ${plural(info.cols, 'column')}`, cls: info.rows ? '' : 'warn' };
   }
   const shortStat = (text, from, key) => {
+    if (mem.has(key)) return memStat(mem.get(key), true);
     const info = inspectTable(text);
     if (info.empty) return from ? { text: from, cls: '' } : { text: 'empty', cls: 'warn' };
     if (info.error) return { text: '!', cls: 'error' };
@@ -227,6 +247,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
         : '<input class="tt-rename" spellcheck="false" autocomplete="off" placeholder="Table name, e.g. orders" aria-label="Table name">'}
         <span class="tt-stat"></span></header>
       <div class="tt-cols"></div>
+      <div class="tt-file"></div>
       <textarea class="tt-text" spellcheck="false" autocomplete="off" rows="10" aria-label="Rows as CSV or TSV"></textarea>
       <div class="tt-grid" hidden></div>
       <div class="tt-tools">${TOOLS[kind]}
@@ -259,7 +280,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       if (!r.truncated) return;
       e.preventDefault();
       setText(el, r.text);
-      toast(`Kept the header and the first ${r.rows.toLocaleString()} of ${r.total.toLocaleString()} rows`);
+      toast(`Kept the header and the first ${r.rows.toLocaleString()} of ${r.total.toLocaleString()} rows · upload it as a file to keep every row`);
     });
     const name = el.querySelector('.tt-rename');
     if (name) {
@@ -284,6 +305,28 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     const s = el.querySelector('.tt-stat');
     s.textContent = st.text;
     s.className = 'tt-stat ' + st.cls;
+    // A file kept in memory shows what it is and its first rows, in place of the text.
+    const m = mem.get(el.dataset.key);
+    el.classList.toggle('is-file', !!m);
+    const box = el.querySelector('.tt-file');
+    const sig = m ? `${m.id}|${m.status}|${m.rows}` : '';
+    if (box.dataset.sig !== sig) { box.dataset.sig = sig; box.innerHTML = m ? fileHtml(m) : ''; }
+  }
+
+  function fileHtml(m) {
+    const name = `<b>${esc(m.name)}</b> <span class="muted">${esc(fileSize(m.size))}</span>`;
+    if (m.status === 'gone') return `<p>${name}</p><p>It was kept in this tab's memory only, so it's gone since the page reloaded. Add it again: <b>Upload file…</b> below, or drop it here.</p>`;
+    if (m.status === 'error') return `<p>${name}</p><p class="tt-file-err">${esc(m.error)}</p>`;
+    const { rows } = parseDelimited(m.head);
+    const shown = rows.slice(1, 21);
+    const names = m.info.names;
+    const grid = shown.length ? `<div class="tt-file-grid"><table class="res-grid"><thead><tr><th class="rn">#</th>${names.map((n) => `<th>${esc(n)}</th>`).join('')}</tr></thead><tbody>${
+      shown.map((r, i) => `<tr><td class="rn">${i + 1}</td>${names.map((_, j) => {
+        const v = r[j];
+        return v === undefined || v === '' || v === 'NULL' ? '<td class="null">NULL</td>' : `<td>${esc(v.length > 80 ? v.slice(0, 80) + '…' : v)}</td>`;
+      }).join('')}</tr>`).join('')}</tbody></table></div><div class="tt-grid-more">First ${shown.length} rows</div>` : '';
+    return `<p>${name} · ${m.status === 'loading' ? 'loading into DuckDB…' : `${plural(m.rows, 'row')} · ${plural(names.length, 'column')}`}</p>
+      <p class="muted">Kept whole in this tab's memory: it is not uploaded and not saved, so after a reload add it again.</p>${grid}`;
   }
 
   // Which saved tables stand in for which empty query tables.
@@ -291,12 +334,12 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     const served = new Map(); // saved key -> [query table names]
     for (const el of cards.values()) {
       if (el.dataset.kind !== 'query') continue;
-      const found = resolveTableData(store.tables, el.dataset.key);
+      const found = resolveTableData(allData(), el.dataset.key);
       const from = found && !found.exact ? found.key : '';
       el.dataset.from = from;
       el.querySelector('.tt-uses')?.remove();
       if (from) {
-        el.querySelector('.tt-cols').insertAdjacentHTML('afterend', `<div class="tt-uses">Uses your saved table <button class="link" data-act="goto-table" data-key="${esc(from)}">${esc(from)}</button>. Rows typed here take its place.</div>`);
+        el.querySelector('.tt-cols').insertAdjacentHTML('afterend', `<div class="tt-uses">Uses your ${found.file ? `file ${esc(found.file.name)}, the table` : 'saved table'} <button class="link" data-act="goto-table" data-key="${esc(from)}">${esc(from)}</button>. Rows typed here take its place.</div>`);
         served.set(from, [...(served.get(from) || []), el.querySelector('.tt-name').textContent]);
       }
       paintStat(el);
@@ -338,11 +381,17 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (!validName(name)) { toast('Use letters, digits, _ - and dots, like orders or proj.ds.orders', 'error'); input.value = old || ''; return; }
     const key = tableKey(name);
     if (key === old) return;
-    if (store.tables[key] !== undefined || cards.has(key)) { toast(`There is already a test table called ${key}`, 'error'); input.value = old || ''; return; }
+    if (store.tables[key] !== undefined || mem.has(key) || cards.has(key)) { toast(`There is already a test table called ${key}`, 'error'); input.value = old || ''; return; }
     const text = el.querySelector('textarea').value;
+    const m = old && mem.get(old);
     if (old) { delete store.tables[old]; cards.delete(old); }
     if (draft === el) draft = null;
-    store.tables[key] = text;
+    if (m) {
+      mem.delete(old);
+      mem.set(key, m);
+      delete store.files[old];
+      store.files[key] = { name: m.name, size: m.size };
+    } else store.tables[key] = text;
     if (old && store.cut[old]) { store.cut[key] = store.cut[old]; delete store.cut[old]; }
     save();
     el.dataset.key = key;
@@ -438,7 +487,8 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   // importText or readXlsx said about it: a cut file is noted with the table.
   function fill(key, r, what, file) {
     if (!validName(key)) { toast(`Rename ${what} to a plain name like orders first`, 'error'); return false; }
-    if ((store.tables[key] ?? '').trim() && store.tables[key] !== r.text && !confirm(`Replace the test data in ${key} with ${what}?`)) return false;
+    if (hasData(key) && store.tables[key] !== r.text && !confirm(`Replace the test data in ${key} with ${what}?`)) return false;
+    dropMem(key);
     store.tables[key] = r.text;
     if (r.truncated) store.cut[key] = { rows: r.rows, total: r.total, file };
     else delete store.cut[key];
@@ -446,27 +496,95 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (el) { el.querySelector('textarea').value = r.text; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
     return true;
   }
+  // ---- files kept in memory --------------------------------------------------------------
+
+  // A file too big for a test table: its first lines give the columns, and DuckDB
+  // loads the whole file (from the File itself, in its worker) right away.
+  async function keepFile(key, file, what) {
+    if (!validName(key)) { toast(`Rename ${what} to a plain name like orders first`, 'error'); return null; }
+    if (hasData(key) && !confirm(`Replace the test data in ${key} with ${what}?`)) return null;
+    let head;
+    try { head = await file.slice(0, 64 * 1024).text(); } catch { toast(`Couldn't read ${what}`, 'error'); return null; }
+    if (head.includes('\u0000')) { toast(`${what} doesn't look like a CSV file`, 'error'); return null; }
+    head = head.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    if (file.size > 64 * 1024) head = head.slice(0, head.lastIndexOf('\n') + 1); // whole lines only
+    const info = inspectTable(head);
+    if (!info.names.length) { toast(`${what} has no header row`, 'error'); return null; }
+    delete store.tables[key];
+    delete store.cut[key];
+    dropMem(key);
+    const m = { id: `f${Date.now().toString(36)}${++memSeq}`, name: what, size: file.size, file, info, head, rows: null, status: 'loading' };
+    mem.set(key, m);
+    store.files[key] = { name: what, size: file.size };
+    save();
+    m.ready = loadMem(m);
+    return m;
+  }
+
+  async function loadMem(m) {
+    try {
+      const engine = await import('./engine.js');
+      if (!running) setStatus(engine.isLoaded() ? `Loading ${m.name}…` : 'Loading DuckDB (first run only, ≈8 MB)…', 'busy');
+      const load = async () => {
+        const d = await engine.createDriver();
+        await d.open();
+        try { [{ rows: m.rows }] = await loadFiles(d, [{ id: m.id, name: `qf_file_${m.id}.csv`, file: m.file, info: m.info }]); } finally { await d.close(); }
+      };
+      // A run stopped while this loads throws DuckDB away, this load with it.
+      if (await Promise.race([engine.whenStopped().then(() => true), load().then(() => false)])) throw new Error(`Loading ${m.name} was stopped: add the file again`);
+      m.status = 'ready';
+    } catch (err) {
+      m.status = 'error';
+      m.error = /out of memory|bad_alloc/i.test(String(err?.message ?? err)) ? `${m.name} is too big for this browser tab's memory` : cleanError(err).text;
+    }
+    if (!running) setStatus('');
+    if (![...mem.values()].includes(m)) { forget(m.id); return; } // replaced while it loaded
+    repaint();
+  }
+
+  // Forget a file kept in memory: DuckDB frees its table.
+  function dropMem(key) {
+    const m = mem.get(key);
+    if (!m) return;
+    mem.delete(key);
+    delete store.files[key];
+    if (m.id && m.status !== 'loading') forget(m.id);
+  }
+  async function forget(id) {
+    try {
+      const engine = await import('./engine.js');
+      if (!engine.isLoaded()) return;
+      const d = await engine.createDriver();
+      await d.open();
+      try { await forgetFile(d, id); } finally { await d.close(); }
+    } catch { /* the engine was stopped: nothing left to free */ }
+  }
+
+  function repaint() {
+    if (!analysis) return;
+    renderTables(analysis);
+    renderChips();
+    if (!resultShown) renderIdle();
+  }
+
   const rowsNote = (r) => (r.truncated ? `only the first ${r.rows.toLocaleString()} of ${plural(r.total, 'row')}: test tables are kept small` : plural(r.rows, 'row'));
 
   // Each sheet with cells becomes a table: a sheet named like a table the query
   // reads fills it; otherwise a one-sheet file is named after the file, and a
-  // sheet with a real name after the sheet. Returns what it filled, as importFiles does.
-  async function importWorkbook(file, target) {
+  // sheet with a real name after the sheet. A sheet too big for a test table is
+  // kept in memory. Returns what it filled, as importFiles does.
+  async function importWorkbook(file, target, notes) {
     let sheets;
     try {
       const { readXlsx } = await import('./xlsx.js');
-      sheets = await readXlsx(await file.arrayBuffer(), { maxRows: LIMITS.rows });
+      sheets = await readXlsx(await file.arrayBuffer(), { maxRows: Infinity });
     } catch (err) { toast(`${file.name}: ${err.message || err}`, 'error'); return []; }
     if (!sheets.length) { toast(`${file.name} has no cells to import`, 'error'); return []; }
-    // A sheet within the row limit can still be over the character limit.
-    sheets = sheets.map((sh) => {
-      const r = importText(sh.text);
-      return r.truncated ? { ...sh, text: r.text, rows: r.rows, truncated: true } : sh;
-    });
     const plan = [];
     if (target) {
       const named = sheets.find((sh) => { const k = tableKey(plainName(sh.name)); return k === target || target.endsWith('.' + k); });
-      plan.push({ key: target, sheet: named || sheets[0] });
+      plan.push({ key: target, sheet: named || sheets[0], query: true });
+      if (sheets.length > 1) notes.push(`the other ${plural(sheets.length - 1, 'sheet')} of ${file.name} skipped: use "Upload files…" to import every sheet`);
     } else {
       const base = plainName(file.name);
       sheets.forEach((sh, i) => {
@@ -477,39 +595,67 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       });
     }
     const one = sheets.length === 1;
-    const done = plan.filter((p) => fill(p.key, p.sheet, one ? file.name : `sheet "${p.sheet.name}" of ${file.name}`, one ? file.name : `${file.name} (${p.sheet.name})`));
-    if (!done.length) return [];
-    save();
-    renderTables(analysis);
-    const parts = done.map((p) => `${one ? '→ ' : `${p.sheet.name} → `}${p.key} (${rowsNote(p.sheet)})`);
-    const skipped = target && sheets.length > 1 ? ` · the other ${plural(sheets.length - 1, 'sheet')} skipped: use "Upload files…" to import every sheet` : '';
-    toast(`Imported ${file.name} ${parts.join(', ')}${skipped}`);
-    return done.map((p) => ({ key: p.key, file: file.name, rows: p.sheet.rows, total: p.sheet.total, truncated: !!p.sheet.truncated, query: !!(target || p.query) }));
+    const done = [];
+    for (const p of plan) {
+      const what = one ? file.name : `sheet "${p.sheet.name}" of ${file.name}`;
+      const label = one ? file.name : `${file.name} (${p.sheet.name})`;
+      const r = importText(p.sheet.text);
+      if (!r.truncated) {
+        if (fill(p.key, r, what, label)) done.push({ key: p.key, file: label, rows: r.rows, total: r.total, truncated: false, query: p.query });
+        continue;
+      }
+      const m = await keepFile(p.key, new File([p.sheet.text], `${label}.csv`), label);
+      if (m) done.push({ key: p.key, file: label, mem: m, query: p.query });
+    }
+    return done;
   }
 
   // Each file becomes a test table, or fills the one it is named after (or `target`).
-  // Returns [{ key, file, rows, total, truncated, query }], `query` when the query reads it.
+  // A file too big for a test table is kept whole in memory instead (keepFile).
+  // Returns [{ key, file, rows, total, truncated, query, mem }], `query` when the
+  // query reads it, `mem` for a file kept in memory (loaded by the time it returns).
   async function importFiles(files, target = null) {
     const done = [];
+    const notes = [];
     for (const file of files) {
       if (/\.(xls|numbers|ods)$/i.test(file.name)) {
         toast(`${file.name}: save it as .xlsx or CSV first, or copy its cells and paste them into a table`, 'error');
         continue;
       }
-      if (file.size > 20 * 1024 * 1024) { toast(`${file.name} is over 20 MB: test tables are meant to be small`, 'error'); continue; }
-      if (/\.(xlsx|xlsm)$/i.test(file.name)) { done.push(...await importWorkbook(file, target)); continue; }
-      let raw;
-      try { raw = await file.text(); } catch { toast(`Couldn't read ${file.name}`, 'error'); continue; }
-      if (raw.includes('\u0000')) { toast(`${file.name} doesn't look like a CSV file`, 'error'); continue; }
+      if (/\.(xlsx|xlsm)$/i.test(file.name)) {
+        if (file.size > LIMITS.xlsxBytes) { toast(`${file.name} is over ${LIMITS.xlsxBytes / 1048576} MB: save it as CSV to load it`, 'error'); continue; }
+        done.push(...await importWorkbook(file, target, notes));
+        continue;
+      }
+      if (file.size > LIMITS.fileBytes) { toast(`${file.name} is over ${LIMITS.fileBytes / 1048576} MB, too big to load in a browser tab`, 'error'); continue; }
       const t = target ? { key: target, query: true } : targetFor(file.name);
-      const r = importText(raw);
-      if (!fill(t.key, r, file.name, file.name)) continue;
-      save();
-      renderTables(analysis);
-      toast(`Imported ${file.name} → ${t.key} (${rowsNote(r)})`);
-      done.push({ key: t.key, file: file.name, rows: r.rows, total: r.total, truncated: r.truncated, query: t.query });
+      // Small enough to be a saved test table? (Over 4 bytes a character, it can't be.)
+      let r = null;
+      if (file.size <= 4 * LIMITS.chars) {
+        let raw;
+        try { raw = await file.text(); } catch { toast(`Couldn't read ${file.name}`, 'error'); continue; }
+        if (raw.includes('\u0000')) { toast(`${file.name} doesn't look like a CSV file`, 'error'); continue; }
+        r = importText(raw);
+      }
+      if (r && !r.truncated) {
+        if (fill(t.key, r, file.name, file.name)) done.push({ key: t.key, file: file.name, rows: r.rows, total: r.total, truncated: false, query: t.query });
+        continue;
+      }
+      const m = await keepFile(t.key, file, file.name);
+      if (m) done.push({ key: t.key, file: file.name, mem: m, query: t.query });
     }
-    return done;
+    if (!done.length) return [];
+    save();
+    renderTables(analysis);
+    await Promise.all(done.map((d) => d.mem?.ready));
+    for (const d of done) if (d.mem) Object.assign(d, { rows: d.mem.rows, total: d.mem.rows, error: d.mem.status === 'error' ? d.mem.error : null });
+    const bad = done.find((d) => d.error);
+    if (bad) toast(`${bad.file}: ${bad.error}`, 'error');
+    else {
+      const parts = done.map((d) => `${d.file} → ${d.key} (${d.mem ? `${plural(d.rows, 'row')}, kept in this tab's memory` : rowsNote(d)})`);
+      toast(`Imported ${parts.join(', ')}${notes.length ? ' · ' + notes.join(' · ') : ''}`);
+    }
+    return done.filter((d) => !d.error);
   }
 
   // Imported into the open dialog: an empty new-table editor gives way to the
@@ -578,15 +724,21 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     }
     if (act === 'view') toggleView(el);
     if (act === 'delete') {
-      if (ta.value.trim() && !confirm(`Delete the test table ${key || '(unnamed)'}?`)) return;
-      if (key) { delete store.tables[key]; delete store.cut[key]; cards.delete(key); save(); }
+      if ((ta.value.trim() || mem.has(key)) && !confirm(`Delete the test table ${key || '(unnamed)'}?`)) return;
+      if (key) { delete store.tables[key]; delete store.cut[key]; dropMem(key); cards.delete(key); save(); }
       if (draft === el) draft = null;
       selected = null;
       el.remove();
       renderTables(analysis);
       return;
     }
-    if (act === 'clear') setText(el, '');
+    if (act === 'clear') {
+      if (!mem.has(key)) { setText(el, ''); return; }
+      dropMem(key);
+      save();
+      repaint();
+      return;
+    }
     const cols = (analysis && queryColumns(analysis).get(key)) || [];
     if (act === 'header') {
       if (!cols.length) { toast('The query doesn\'t name any columns of this table (it may only use *): type a header row'); return; }
@@ -608,9 +760,10 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   });
 
   function clearAll() {
-    if (!Object.keys(store.tables).length && !Object.keys(store.params).length) { toast('No test data saved'); return; }
+    if (!Object.keys(store.tables).length && !Object.keys(store.params).length && !mem.size) { toast('No test data saved'); return; }
     if (!confirm('Delete all saved test tables and parameter values (for every query)?')) return;
-    store = { tables: {}, params: {}, cut: {} };
+    for (const k of [...mem.keys()]) dropMem(k);
+    store = { tables: {}, params: {}, cut: {}, files: {} };
     save();
     for (const el of cards.values()) { el.querySelector('textarea').value = ''; if (!el.querySelector('.tt-grid').hidden) toggleView(el, false); }
     draft = null;
@@ -624,23 +777,26 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   // ---- the tab: chips, parameters and the idle hint ----------------------------------------
 
   // The query's tables that have no rows of their own or from a saved table.
-  const emptyTables = () => (analysis ? sourceTables(analysis).filter((t) => !resolveTableData(store.tables, t.key)) : []);
+  const emptyTables = () => (analysis ? sourceTables(analysis).filter((t) => !resolveTableData(allData(), t.key)) : []);
+  // Saved tables and files kept in memory, by name.
+  const savedKeys = () => [...new Set([...Object.keys(store.tables), ...mem.keys()])];
 
   function renderChips() {
     if (!analysis) return;
     const tables = sourceTables(analysis);
     const queryKeys = new Set(tables.map((t) => t.key));
-    const others = Object.keys(store.tables).filter((k) => !queryKeys.has(k)).sort();
+    const others = savedKeys().filter((k) => !queryKeys.has(k)).sort();
     const chip = (key, label, text, from) => {
       const st = shortStat(text, from, key);
-      return `<button class="rt-chip ${st.cls}" data-key="${esc(key)}" title="${esc(key)}: ${esc(statText(text, from, key).text)}. Click to edit"><span>${esc(label)}</span><small>${esc(st.text)}</small></button>`;
+      const m = mem.get(from || key);
+      return `<button class="rt-chip ${st.cls}${m ? ' mem' : ''}" data-key="${esc(key)}" title="${esc(key)}: ${esc(statText(text, from, key).text)}${m && m.status !== 'gone' ? ` (${esc(m.name)}, in this tab's memory only)` : ''}. Click to edit"><span>${esc(label)}</span><small>${esc(st.text)}</small></button>`;
     };
     let html = tables.map((t) => {
-      const found = resolveTableData(store.tables, t.key);
+      const found = resolveTableData(allData(), t.key);
       return chip(t.key, t.label, store.tables[t.key] ?? '', found && !found.exact ? found.key : '');
     }).join('');
     // With no tables in the query (a learner starting out), the saved tables are the point.
-    if (!tables.length) html = others.map((k) => chip(k, k, store.tables[k], '')).join('');
+    if (!tables.length) html = others.map((k) => chip(k, k, store.tables[k] ?? '', '')).join('');
     else if (others.length) html += `<button class="rt-more" data-act="open" data-key="${esc(others[0])}" title="Saved test tables this query doesn't read">+${others.length} saved</button>`;
     chipsEl.innerHTML = html;
     if (tables.length > LIMITS.tables) toast(`This query reads ${tables.length} tables: test runs take up to ${LIMITS.tables}`, 'error');
@@ -651,7 +807,9 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (!analysis) return;
     const tables = sourceTables(analysis);
     const empty = emptyTables();
-    const saved = Object.keys(store.tables).filter((k) => store.tables[k]?.trim());
+    const saved = savedKeys().filter((k) => store.tables[k]?.trim() || mem.has(k));
+    // Files kept in memory that the query reads, gone since a reload.
+    const gone = tables.map((t) => resolveTableData(allData(), t.key)).filter((f) => f?.file?.status === 'gone');
     const runKey = '<kbd>⌘</kbd><kbd>Enter</kbd>';
     let html;
     const practice = practiceLoaded();
@@ -675,6 +833,11 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
           <li>Run it (${runKey}): it runs here in your browser, nothing is uploaded.</li>
         </ol>
         <div class="res-idle-acts"><button class="btn primary sm" data-act="new">+ Create or upload table</button></div>`;
+    } else if (gone.length) {
+      const one = gone.length === 1;
+      html = `<h3>Add ${one ? 'your file' : 'your files'} again</h3>
+        <p>${gone.map((f) => `<b>${esc(f.file.name)}</b>`).join(', ')} ${one ? 'was' : 'were'} kept in this tab's memory only, never saved or uploaded, so ${one ? "it's" : "they're"} gone since the page reloaded. Drop ${one ? 'it' : 'them'} anywhere on the page, or:</p>
+        <div class="res-idle-acts"><button class="btn primary sm" data-act="readd" data-key="${esc(gone[0].key)}">Add ${esc(gone[0].file.name)}…</button></div>`;
     } else if (empty.length) {
       const fillable = empty.filter((t) => (queryColumns(analysis).get(t.key) || []).length);
       html = `<h3>${empty.length === tables.length ? 'Add a few rows to run this query' : `${plural(empty.length, 'table')} still ${empty.length === 1 ? 'has' : 'have'} no rows`}</h3>
@@ -707,6 +870,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     for (const k of keys) {
       store.tables[k] = tables[k];
       delete store.cut[k];
+      dropMem(k);
       const el = cards.get(k);
       if (el) { el.querySelector('textarea').value = tables[k]; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
     }
@@ -797,7 +961,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     const tables = sourceTables(a);
     const cols = queryColumns(a);
     const queryKeys = new Set(tables.map((t) => t.key));
-    const savedOther = Object.keys(store.tables).filter((k) => !queryKeys.has(k)).sort();
+    const savedOther = savedKeys().filter((k) => !queryKeys.has(k)).sort();
     const want = new Map([...tables.map((t) => [t.key, 'query']), ...savedOther.map((k) => [k, 'other'])]);
     for (const [k, el] of cards) {
       if (want.get(k) !== el.dataset.kind) { el.remove(); cards.delete(k); }
@@ -889,7 +1053,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (!a.src.trim()) { toast('Nothing to run yet'); return; }
     if (target && targetSel.value !== target) { renderTargets(a); targetSel.value = target; }
     const { src, label, preview } = sourceFor(a, target);
-    const { plan, translation, problems } = planRun(src, { data: store.tables, params: store.params });
+    const { plan, translation, problems } = planRun(src, { data: allData(), params: store.params });
     lastPlan = plan;
     resultShown = true;
     ran = { src: a.src, tables: tablesSig(a) };
@@ -908,9 +1072,12 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     setStatus(engine.isLoaded() ? 'Running…' : 'Loading DuckDB (first run only, ≈8 MB)…', 'busy');
     let res;
     try {
-      const driver = await engine.createDriver();
-      if (!stopped) setStatus('Running…', 'busy');
-      res = await executePlan(plan, driver, { maxRows: LIMITS.resultRows });
+      // Stopping terminates DuckDB's worker, which then never answers: stop wins the race.
+      res = await Promise.race([engine.whenStopped().then(() => ({ stopped: true })), (async () => {
+        const driver = await engine.createDriver();
+        if (!stopped) setStatus(plan.loads.some((f) => !driver.loaded.has(f.id)) ? 'Loading the file and running…' : 'Running…', 'busy');
+        return executePlan(plan, driver, { maxRows: LIMITS.resultRows });
+      })()]);
     } catch (err) {
       res = stopped ? { stopped: true } : { error: { text: String(err?.message || err).split('\n')[0], where: 'starting DuckDB' } };
     } finally {
@@ -935,7 +1102,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     const seen = new Set();
     const cut = [];
     for (const t of sourceTables(a)) {
-      const k = resolveTableData(store.tables, t.key)?.key;
+      const k = resolveTableData(allData(), t.key)?.key;
       const c = cutOf(k);
       if (c && !seen.has(k)) { seen.add(k); cut.push(`<b>${esc(t.label)}</b> has ${esc(cutText(c))}`); }
     }
@@ -949,7 +1116,8 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
 
   function renderProblems(problems, translation) {
     resEl.innerHTML = `<div class="res-error"><b>Can't run yet</b><ul>${problems.map((p) => `<li>${esc(p.message)}${
-      p.table ? ` <button class="mini" data-act="add-data" data-key="${esc(p.table)}">Add test data</button>` : ''}${
+      p.file ? ` <button class="mini" data-act="readd" data-key="${esc(p.table)}">Add ${esc(p.file)}…</button>`
+        : p.table ? ` <button class="mini" data-act="add-data" data-key="${esc(p.table)}">Add test data</button>` : ''}${
       p.line ? ` <button class="mini" data-act="goto" data-line="${p.line}">Line ${p.line}</button>` : ''}</li>`).join('')}</ul></div>
       ${notesHtml(translation?.warnings)}`;
   }
@@ -1003,6 +1171,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       view.focus();
     }
     if (b.dataset.act === 'add-data' || b.dataset.act === 'edit') openTables(b.dataset.key);
+    if (b.dataset.act === 'readd') { importTarget = b.dataset.key; fileInput.click(); }
     if (b.dataset.act === 'new') openTables('new');
     if (b.dataset.act === 'fill') fillStarters();
     if (b.dataset.act === 'rerun') run();

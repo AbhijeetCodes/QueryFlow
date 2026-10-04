@@ -59,7 +59,9 @@ npm run build    # static site in dist/ (relative paths via base: './')
   (keeps line numbers; points table names at test tables); `src/testdata.js` parses the CSV / TSV
   test tables, holds the size limits and guesses columns / starter rows from the analysis;
   `src/runner.js` plans and executes a run against any driver; `src/engine.js` is the
-  DuckDB-WASM driver; `src/xlsx.js` reads `.xlsx` imports (no library); `src/practice.js` is the practice database and its example queries (each one is run in `test/run.test.js`); `src/run-panel.js` is the UI. `test/run.test.js` runs the translations on
+  DuckDB-WASM driver. A file too big for a test table is never saved: it stays in the tab's
+  memory (`mem` in `run-panel.js`), is loaded once into DuckDB's `memory.qf_files` and each
+  run reads it through a view; `src/xlsx.js` reads `.xlsx` imports (no library); `src/practice.js` is the practice database and its example queries (each one is run in `test/run.test.js`); `src/run-panel.js` is the UI. `test/run.test.js` runs the translations on
   DuckDB's Node build, so add a case there for each new translation rule.
 
 Every edit, including edits from the side panels, is a CodeMirror transaction, so one undo

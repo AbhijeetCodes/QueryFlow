@@ -13,6 +13,10 @@ export const LIMITS = {
   chars: 200_000, // characters per table
   total: 1_500_000, // characters across all saved tables (they live in localStorage)
   resultRows: 1000, // rows shown in the results grid
+  // A file bigger than a test table isn't saved: it stays whole in this tab's memory
+  // (see runner.js loadFiles) and is gone after a reload.
+  fileBytes: 500 * 1024 * 1024, // a CSV / TSV file kept in memory
+  xlsxBytes: 50 * 1024 * 1024, // an Excel file (read into text before DuckDB sees it)
 };
 
 // ---- CSV / TSV --------------------------------------------------------------------
@@ -125,15 +129,18 @@ export function sqlName(key) {
 /**
  * The saved test table for a table the query reads: its exact name, else the
  * longest saved name that is the end of it (`shop.orders`, then `orders`, for
- * `proj.shop.orders`). Returns { key, text, exact } or null.
+ * `proj.shop.orders`). Returns { key, text, exact } (plus `file` for a file kept
+ * in memory) or null.
  */
 export function resolveTableData(data, key) {
-  if (data[key]?.trim()) return { key, text: data[key], exact: true };
-  const hits = Object.keys(data).filter((k) => data[k]?.trim() && k !== key && key.endsWith('.' + k));
+  // A value is CSV text, or a file kept in memory ({ id, name, file, info, status }).
+  const has = (v) => (typeof v === 'string' ? !!v.trim() : !!v);
+  const found = (k, exact) => (typeof data[k] === 'string' ? { key: k, text: data[k], exact } : { key: k, text: '', file: data[k], exact });
+  if (has(data[key])) return found(key, true);
+  const hits = Object.keys(data).filter((k) => has(data[k]) && k !== key && key.endsWith('.' + k));
   if (!hits.length) return null;
   // Two different names of the same length can't both end the key, so the longest is unique.
-  const best = hits.reduce((x, y) => (y.length > x.length ? y : x));
-  return { key: best, text: data[best], exact: false };
+  return found(hits.reduce((x, y) => (y.length > x.length ? y : x)), false);
 }
 export const csvLine = (cells, delim = ',') => cells.map(csvCell).join(delim);
 

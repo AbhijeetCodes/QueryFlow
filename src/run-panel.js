@@ -8,7 +8,7 @@ import { track } from './stats.js';
 import { tableKey } from './bq2duck.js';
 import { planRun, executePlan, planText } from './runner.js';
 import { PRACTICE_TABLES, PRACTICE_QUERIES, PRACTICE_NOTE } from './practice.js';
-import { LIMITS, inspectTable, queryColumns, starterRows, withColumns, csvLine, importText, resolveTableData, parseDelimited } from './testdata.js';
+import { LIMITS, inspectTable, queryColumns, starterRows, withColumns, csvLine, importText, resolveTableData, parseDelimited, sqlName } from './testdata.js';
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const plural = (n, w) => `${n.toLocaleString()} ${w}${n === 1 ? '' : 's'}`;
@@ -17,8 +17,8 @@ const STORE_KEY = 'queryflow.testdata';
 function loadStore() {
   try {
     const v = JSON.parse(localStorage.getItem(STORE_KEY) || '{}');
-    return { tables: v.tables || {}, params: v.params || {} };
-  } catch { return { tables: {}, params: {} }; }
+    return { tables: v.tables || {}, params: v.params || {}, cut: v.cut || {} };
+  } catch { return { tables: {}, params: {}, cut: {} }; }
 }
 
 // ---- formatting result values (Arrow values from DuckDB) ---------------------------
@@ -188,16 +188,24 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     return [...seen.values()].sort((x, y) => x.full.localeCompare(y.full));
   }
 
-  function statText(text, from) {
+  // A table filled from a file that had more rows than a test table keeps.
+  const cutOf = (key) => (key && store.tables[key]?.trim() && store.cut[key]) || null;
+  const cutText = (c) => `the first ${c.rows.toLocaleString()} of ${plural(c.total, 'row')} of ${c.file}`;
+
+  function statText(text, from, key) {
     const info = inspectTable(text);
     if (info.empty) return from ? { text: `uses ${from}`, cls: '' } : { text: 'no rows yet', cls: 'warn' };
     if (info.error) return { text: info.error, cls: 'error' };
+    const c = cutOf(key);
+    if (c) return { text: `${cutText(c)} · ${plural(info.cols, 'column')}`, cls: 'warn' };
     return { text: `${plural(info.rows, 'row')} · ${plural(info.cols, 'column')}`, cls: info.rows ? '' : 'warn' };
   }
-  const shortStat = (text, from) => {
+  const shortStat = (text, from, key) => {
     const info = inspectTable(text);
     if (info.empty) return from ? { text: from, cls: '' } : { text: 'empty', cls: 'warn' };
     if (info.error) return { text: '!', cls: 'error' };
+    const c = cutOf(key);
+    if (c) return { text: `${c.rows.toLocaleString()} of ${c.total.toLocaleString()}`, cls: 'warn' };
     return { text: plural(info.rows, 'row'), cls: info.rows ? 'ok' : 'warn' };
   };
 
@@ -235,6 +243,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       if (!k) return; // a draft without a name keeps its text until it gets one
       if (ta.value || el.dataset.kind === 'other') store.tables[k] = ta.value;
       else delete store.tables[k];
+      if (!ta.value.trim()) delete store.cut[k];
       save();
       paintStat(el);
       paintNav();
@@ -271,7 +280,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   }
 
   function paintStat(el) {
-    const st = statText(el.querySelector('textarea').value, el.dataset.from);
+    const st = statText(el.querySelector('textarea').value, el.dataset.from, el.dataset.key);
     const s = el.querySelector('.tt-stat');
     s.textContent = st.text;
     s.className = 'tt-stat ' + st.cls;
@@ -334,6 +343,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (old) { delete store.tables[old]; cards.delete(old); }
     if (draft === el) draft = null;
     store.tables[key] = text;
+    if (old && store.cut[old]) { store.cut[key] = store.cut[old]; delete store.cut[old]; }
     save();
     el.dataset.key = key;
     cards.set(key, el);
@@ -380,7 +390,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
 
   function navItem(el, label) {
     const key = el.dataset.key;
-    const st = el === draft ? { text: 'new', cls: '' } : shortStat(el.querySelector('textarea').value, el.dataset.from);
+    const st = el === draft ? { text: 'new', cls: '' } : shortStat(el.querySelector('textarea').value, el.dataset.from, key);
     return `<li><button class="tt-navi${el === selected ? ' sel' : ''}" data-key="${esc(key)}"${el === draft ? ' data-draft="1"' : ''} title="${esc(key || 'New table')}">
       <span class="tt-navn">${esc(label)}</span><span class="tt-navs ${st.cls}">${esc(st.text)}</span></button></li>`;
   }
@@ -424,20 +434,23 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     return hit ? { key: hit.key, query: true } : { key: base, query: false };
   }
 
-  // Put text in a table, asking before replacing rows that are there.
-  function fill(key, text, what) {
+  // Put text in a table, asking before replacing rows that are there. `r` is what
+  // importText or readXlsx said about it: a cut file is noted with the table.
+  function fill(key, r, what, file) {
     if (!validName(key)) { toast(`Rename ${what} to a plain name like orders first`, 'error'); return false; }
-    if ((store.tables[key] ?? '').trim() && store.tables[key] !== text && !confirm(`Replace the test data in ${key} with ${what}?`)) return false;
-    store.tables[key] = text;
+    if ((store.tables[key] ?? '').trim() && store.tables[key] !== r.text && !confirm(`Replace the test data in ${key} with ${what}?`)) return false;
+    store.tables[key] = r.text;
+    if (r.truncated) store.cut[key] = { rows: r.rows, total: r.total, file };
+    else delete store.cut[key];
     const el = cards.get(key);
-    if (el) { el.querySelector('textarea').value = text; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
+    if (el) { el.querySelector('textarea').value = r.text; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
     return true;
   }
-  const rowsNote = (r) => (r.truncated ? `first ${r.rows.toLocaleString()} of ${r.total.toLocaleString()} rows` : plural(r.rows, 'row'));
+  const rowsNote = (r) => (r.truncated ? `only the first ${r.rows.toLocaleString()} of ${plural(r.total, 'row')}: test tables are kept small` : plural(r.rows, 'row'));
 
   // Each sheet with cells becomes a table: a sheet named like a table the query
   // reads fills it; otherwise a one-sheet file is named after the file, and a
-  // sheet with a real name after the sheet. Returns the keys it filled.
+  // sheet with a real name after the sheet. Returns what it filled, as importFiles does.
   async function importWorkbook(file, target) {
     let sheets;
     try {
@@ -445,6 +458,11 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       sheets = await readXlsx(await file.arrayBuffer(), { maxRows: LIMITS.rows });
     } catch (err) { toast(`${file.name}: ${err.message || err}`, 'error'); return []; }
     if (!sheets.length) { toast(`${file.name} has no cells to import`, 'error'); return []; }
+    // A sheet within the row limit can still be over the character limit.
+    sheets = sheets.map((sh) => {
+      const r = importText(sh.text);
+      return r.truncated ? { ...sh, text: r.text, rows: r.rows, truncated: true } : sh;
+    });
     const plan = [];
     if (target) {
       const named = sheets.find((sh) => { const k = tableKey(plainName(sh.name)); return k === target || target.endsWith('.' + k); });
@@ -453,56 +471,61 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
       const base = plainName(file.name);
       sheets.forEach((sh, i) => {
         const bySheet = targetFor(sh.name);
-        if (bySheet.query) plan.push({ key: bySheet.key, sheet: sh });
-        else if (sheets.length === 1) plan.push({ key: targetFor(file.name).key, sheet: sh });
-        else plan.push({ key: GENERIC_SHEET.test(sh.name) ? tableKey(`${base}_${i + 1}`) : bySheet.key, sheet: sh });
+        if (bySheet.query) plan.push({ key: bySheet.key, sheet: sh, query: true });
+        else if (sheets.length === 1) plan.push({ key: targetFor(file.name).key, sheet: sh, query: targetFor(file.name).query });
+        else plan.push({ key: GENERIC_SHEET.test(sh.name) ? tableKey(`${base}_${i + 1}`) : bySheet.key, sheet: sh, query: false });
       });
     }
-    const done = plan.filter((p) => fill(p.key, p.sheet.text, sheets.length > 1 ? `sheet "${p.sheet.name}" of ${file.name}` : file.name));
+    const one = sheets.length === 1;
+    const done = plan.filter((p) => fill(p.key, p.sheet, one ? file.name : `sheet "${p.sheet.name}" of ${file.name}`, one ? file.name : `${file.name} (${p.sheet.name})`));
     if (!done.length) return [];
     save();
     renderTables(analysis);
-    const parts = done.map((p) => `${sheets.length > 1 ? `${p.sheet.name} → ` : '→ '}${p.key} (${rowsNote(p.sheet)})`);
+    const parts = done.map((p) => `${one ? '→ ' : `${p.sheet.name} → `}${p.key} (${rowsNote(p.sheet)})`);
     const skipped = target && sheets.length > 1 ? ` · the other ${plural(sheets.length - 1, 'sheet')} skipped: use "Upload files…" to import every sheet` : '';
     toast(`Imported ${file.name} ${parts.join(', ')}${skipped}`);
-    return done.map((p) => p.key);
+    return done.map((p) => ({ key: p.key, file: file.name, rows: p.sheet.rows, total: p.sheet.total, truncated: !!p.sheet.truncated, query: !!(target || p.query) }));
   }
 
+  // Each file becomes a test table, or fills the one it is named after (or `target`).
+  // Returns [{ key, file, rows, total, truncated, query }], `query` when the query reads it.
   async function importFiles(files, target = null) {
-    const keys = [];
+    const done = [];
     for (const file of files) {
       if (/\.(xls|numbers|ods)$/i.test(file.name)) {
         toast(`${file.name}: save it as .xlsx or CSV first, or copy its cells and paste them into a table`, 'error');
         continue;
       }
       if (file.size > 20 * 1024 * 1024) { toast(`${file.name} is over 20 MB: test tables are meant to be small`, 'error'); continue; }
-      if (/\.(xlsx|xlsm)$/i.test(file.name)) { keys.push(...await importWorkbook(file, target)); continue; }
+      if (/\.(xlsx|xlsm)$/i.test(file.name)) { done.push(...await importWorkbook(file, target)); continue; }
       let raw;
       try { raw = await file.text(); } catch { toast(`Couldn't read ${file.name}`, 'error'); continue; }
       if (raw.includes('\u0000')) { toast(`${file.name} doesn't look like a CSV file`, 'error'); continue; }
-      const key = target || targetFor(file.name).key;
+      const t = target ? { key: target, query: true } : targetFor(file.name);
       const r = importText(raw);
-      if (!fill(key, r.text, file.name)) continue;
+      if (!fill(t.key, r, file.name, file.name)) continue;
       save();
       renderTables(analysis);
-      toast(`Imported ${file.name} → ${key} (${rowsNote(r)})`);
-      keys.push(key);
+      toast(`Imported ${file.name} → ${t.key} (${rowsNote(r)})`);
+      done.push({ key: t.key, file: file.name, rows: r.rows, total: r.total, truncated: r.truncated, query: t.query });
     }
-    return keys;
+    return done;
   }
 
   // Imported into the open dialog: an empty new-table editor gives way to the
   // table the file made, and the dialog shows that table.
   async function importAndShow(files, target) {
-    const keys = await importFiles(files, target);
-    if (!keys.length) return;
+    const done = await importFiles(files, target);
+    const keys = done.map((d) => d.key);
+    if (!keys.length) return done;
     if (draft && !draft.querySelector('textarea').value.trim() && (selected === draft || !target)) {
       if (selected === draft) selected = null;
       draft = null;
     }
-    if (modal.hidden) { renderChips(); if (!resultShown) renderIdle(); return; }
+    if (modal.hidden) { renderChips(); if (!resultShown) renderIdle(); return done; }
     renderTables(analysis);
     select(cards.get(keys[keys.length - 1]), false);
+    return done;
   }
 
   fileInput.addEventListener('change', () => {
@@ -513,7 +536,8 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   });
 
   // Files dropped on the dialog's editor fill that table (one file); dropped on
-  // its list or on the Run tab, each file finds its table by name.
+  // its list, each file finds its table by name. Drops anywhere else on the page
+  // come in through addFiles (main.js).
   function dropZone(el, targetOf) {
     const clear = () => { el.classList.remove('dropping'); document.querySelectorAll('.drop-on').forEach((x) => x.classList.remove('drop-on')); };
     el.addEventListener('dragover', (e) => {
@@ -533,7 +557,6 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     });
   }
   dropZone(modal.querySelector('.tt-dialog'), (e) => (e.target.closest('.tt-main') && selected?.dataset.key) || null);
-  dropZone(root, () => null);
 
   modal.addEventListener('click', (e) => {
     const b = e.target.closest('[data-act]');
@@ -556,7 +579,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (act === 'view') toggleView(el);
     if (act === 'delete') {
       if (ta.value.trim() && !confirm(`Delete the test table ${key || '(unnamed)'}?`)) return;
-      if (key) { delete store.tables[key]; cards.delete(key); save(); }
+      if (key) { delete store.tables[key]; delete store.cut[key]; cards.delete(key); save(); }
       if (draft === el) draft = null;
       selected = null;
       el.remove();
@@ -587,7 +610,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
   function clearAll() {
     if (!Object.keys(store.tables).length && !Object.keys(store.params).length) { toast('No test data saved'); return; }
     if (!confirm('Delete all saved test tables and parameter values (for every query)?')) return;
-    store = { tables: {}, params: {} };
+    store = { tables: {}, params: {}, cut: {} };
     save();
     for (const el of cards.values()) { el.querySelector('textarea').value = ''; if (!el.querySelector('.tt-grid').hidden) toggleView(el, false); }
     draft = null;
@@ -609,8 +632,8 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     const queryKeys = new Set(tables.map((t) => t.key));
     const others = Object.keys(store.tables).filter((k) => !queryKeys.has(k)).sort();
     const chip = (key, label, text, from) => {
-      const st = shortStat(text, from);
-      return `<button class="rt-chip ${st.cls}" data-key="${esc(key)}" title="${esc(key)}: ${esc(statText(text, from).text)}. Click to edit"><span>${esc(label)}</span><small>${esc(st.text)}</small></button>`;
+      const st = shortStat(text, from, key);
+      return `<button class="rt-chip ${st.cls}" data-key="${esc(key)}" title="${esc(key)}: ${esc(statText(text, from, key).text)}. Click to edit"><span>${esc(label)}</span><small>${esc(st.text)}</small></button>`;
     };
     let html = tables.map((t) => {
       const found = resolveTableData(store.tables, t.key);
@@ -683,6 +706,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (changed.length && !confirm(`Reset ${changed.join(', ')} to the ${what}? Your edits to ${changed.length === 1 ? 'it' : 'them'} are replaced.`)) return false;
     for (const k of keys) {
       store.tables[k] = tables[k];
+      delete store.cut[k];
       const el = cards.get(k);
       if (el) { el.querySelector('textarea').value = tables[k]; if (!el.querySelector('.tt-grid').hidden) toggleView(el, true); }
     }
@@ -906,6 +930,19 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     return `<ul class="res-notes">${warnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>`;
   }
 
+  // Tables the run read that hold only part of their file: counts and totals cover those rows.
+  function cutHtml(a) {
+    const seen = new Set();
+    const cut = [];
+    for (const t of sourceTables(a)) {
+      const k = resolveTableData(store.tables, t.key)?.key;
+      const c = cutOf(k);
+      if (c && !seen.has(k)) { seen.add(k); cut.push(`<b>${esc(t.label)}</b> has ${esc(cutText(c))}`); }
+    }
+    if (!cut.length) return '';
+    return `<div class="res-cut">${cut.join('; ')}. Test tables keep up to ${LIMITS.rows.toLocaleString()} rows and ${Math.round(LIMITS.chars / 1000)}k characters, so counts and totals here cover only the rows kept.</div>`;
+  }
+
   function sqlBox() {
     return lastPlan ? `<details class="res-sql"><summary>SQL sent to DuckDB</summary><div class="res-sql-tools"><button class="mini" data-act="copy-sql">Copy</button></div><pre>${esc(planText(lastPlan))}</pre></details>` : '';
   }
@@ -949,6 +986,7 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     }).join('')}</tr>`).join('');
     resEl.innerHTML = `
       <div class="res-meta"><b>${esc(label)}</b> · ${truncated ? `showing the first ${plural(rows.length, 'row')}` : plural(rows.length, 'row')} · ${ms} ms <span class="muted">· DuckDB on test data, results can differ from BigQuery in edge cases</span></div>
+      ${cutHtml(getAnalysis())}
       ${notesHtml(translation.warnings)}
       ${fields.length ? `<div class="res-grid-wrap"><table class="res-grid"><thead>${head}</thead><tbody>${body}</tbody></table></div>` : '<div class="res-empty">The statement ran and returned no columns.</div>'}
       ${rows.length || !fields.length ? '' : '<div class="res-empty">No rows. Check the filters against the test data.</div>'}
@@ -1006,5 +1044,9 @@ export function createRunPanel(root, { view, toast, getAnalysis, isBigQuery, ope
     if (!resultShown) renderIdle();
   }
 
-  return { update, run, openTables, loadTables };
+  // Files dropped on the page or opened from the editor: see importFiles. `sql` is
+  // the table's name as the query writes it.
+  const addFiles = async (files) => (await importAndShow(files, null)).map((d) => ({ ...d, sql: sqlName(d.key) }));
+
+  return { update, run, openTables, loadTables, addFiles };
 }

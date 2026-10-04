@@ -11,13 +11,14 @@ const small = globalThis.matchMedia?.('(max-width: 820px)').matches;
 
 // [title, text, text on touch screens (null: leave the line out; undefined: same text)]
 const FEATURES = [
+  ['Query a CSV or Excel file', 'drop it anywhere on the page and run SQL on it. It never leaves your browser.',
+    'open it from the empty editor and run SQL on it. It never leaves your browser.'],
   ['Format and lint', `${MOD}⇧F tidies the query; warnings catch joins that change the numbers.`,
     'the Format button tidies the query; warnings catch joins that change the numbers.'],
   ['Graph and Steps', 'how the tables and CTEs feed each other.'],
   ['Values in one place', 'edit variables, filter values and date windows on the right.',
     small ? 'edit variables, filter values and date windows in the Values view.' : undefined],
   ['Navigate like code', 'hover a name, F12 to jump to it, F2 to rename it.', null],
-  ['Run on test data', 'try a BigQuery query on a few rows you type in.'],
   ['Private', 'nothing leaves your browser, not even with share links.'],
 ];
 

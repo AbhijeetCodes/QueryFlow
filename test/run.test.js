@@ -334,3 +334,21 @@ test('SUM of integers is INT64, as in BigQuery, and keeps the row order', async 
   const { fields } = await run('SELECT 1 AS one', DATA);
   assert.equal(fields[0].type, 'Int32');
 });
+
+test('a file over the character limit keeps the rows that fit; table names as SQL', async () => {
+  const { sqlName } = await import('../src/testdata.js');
+  const wide = 'id,note\n' + Array.from({ length: 300 }, (_, i) => `${i},${'x'.repeat(1000)}`).join('\n');
+  const r = importText(wide);
+  assert.equal(r.truncated, true);
+  assert.equal(r.total, 300);
+  assert.ok(r.text.length <= 200_000);
+  assert.equal(inspectTable(r.text).rows, r.rows);
+  assert.ok(r.rows > 150 && r.rows < 300);
+  assert.equal(sqlName('orders'), 'orders');
+  assert.equal(sqlName('shop.orders'), 'shop.orders');
+  assert.equal(sqlName('my-data'), '`my-data`');
+  assert.equal(sqlName('2024_sales'), '`2024_sales`');
+  assert.equal(sqlName('select'), '`select`');
+  const res = await run('SELECT COUNT(*) AS n FROM `my-data`', { 'my-data': 'a\n1\n2\n' });
+  assert.deepEqual(objs(res), [{ n: 2 }]);
+});

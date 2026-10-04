@@ -358,6 +358,13 @@ a.tm-item { color: inherit; text-decoration: none; }
 .ee-card p { margin: 4px 0 12px; }
 .ee-acts { display: flex; flex-wrap: wrap; gap: 8px; }
 .ee-card small { display: block; margin-top: 10px; font-size: 11.5px; color: var(--text-faint); }
+
+/* Dragging a file over the page: CSV / Excel become test tables, a .sql file opens. */
+.drop-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 16px; pointer-events: none; background: color-mix(in srgb, var(--bg) 70%, transparent); }
+.drop-overlay[hidden] { display: none; }
+.drop-overlay div { max-width: 420px; padding: 22px 26px; text-align: center; border: 2px dashed var(--accent); border-radius: 12px; background: var(--panel); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18); }
+.drop-overlay b { display: block; font-size: 15px; font-weight: 650; color: var(--text); }
+.drop-overlay span { display: block; margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 .editor-wrap .cm-editor { height: 100%; }
 .editor-wrap .cm-editor.cm-focused { outline: none; }
 .right {
@@ -971,6 +978,8 @@ button.s-src:hover { text-decoration: underline; }
 .res-meta b { font-family: var(--mono); font-size: 12px; }
 .res-notes { margin: 0 0 8px; padding: 6px 10px 6px 26px; font-size: 11.5px; color: var(--warning); background: color-mix(in srgb, var(--warning) 8%, transparent); border-radius: 6px; }
 .res-notes li + li { margin-top: 2px; }
+.res-cut { margin: 0 0 8px; padding: 6px 10px; font-size: 11.5px; color: var(--text); background: color-mix(in srgb, var(--warning) 10%, transparent); border-left: 3px solid var(--warning); border-radius: 6px; }
+.res-cut b { font-family: var(--mono); font-weight: 600; }
 .res-error { background: var(--panel); border: 1px solid color-mix(in srgb, var(--error) 45%, var(--border)); border-left: 3px solid var(--error); border-radius: 7px; padding: 9px 12px; margin-bottom: 10px; font-size: 12px; }
 .res-error > b { color: var(--error); display: block; font-family: var(--mono); font-size: 12px; font-weight: 600; word-break: break-word; }
 .res-error ul { margin: 6px 0 0; padding-left: 18px; }

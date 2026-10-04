@@ -87,28 +87,39 @@ const csvCell = (v) => (/[",;\n\t]/.test(String(v)) ? `"${String(v).replace(/"/g
 
 /**
  * Text from a file or a big paste, ready to be a test table: no byte-order mark,
- * \n line ends, and at most `maxRows` data rows (the header plus the first rows).
- * Returns { text, rows, total, truncated }.
+ * \n line ends, and at most `maxRows` data rows and `maxChars` characters (the
+ * header plus the first rows). Returns { text, rows, total, truncated }.
  */
-export function importText(raw, maxRows = LIMITS.rows) {
+export function importText(raw, maxRows = LIMITS.rows, maxChars = LIMITS.chars) {
   const text = String(raw ?? '').replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const { rows } = parseDelimited(text);
   const total = Math.max(0, rows.length - 1);
-  if (total <= maxRows) return { text: text.replace(/\n*$/, '\n'), rows: total, total, truncated: false };
-  // Cut at a line end outside quotes, after the header and maxRows rows.
+  if (total <= maxRows && text.length <= maxChars) return { text: text.replace(/\n*$/, '\n'), rows: total, total, truncated: false };
+  // Cut at a line end outside quotes: after the header and maxRows rows, or at the
+  // last one that keeps the text under maxChars.
   let line = 0;
   let quoted = false;
-  let cut = text.length;
+  let cut = 0;
+  let kept = 0;
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (c === '"') quoted = !quoted;
     else if (c === '\n' && !quoted) {
+      if (i + 1 > maxChars) break;
       // count only lines with content, as parseDelimited does
       if (text.slice(text.lastIndexOf('\n', i - 1) + 1, i).trim()) line++;
-      if (line === maxRows + 1) { cut = i + 1; break; }
+      cut = i + 1;
+      kept = Math.max(0, line - 1);
+      if (line === maxRows + 1) break;
     }
   }
-  return { text: text.slice(0, cut), rows: maxRows, total, truncated: true };
+  return { text: text.slice(0, cut), rows: kept, total, truncated: true };
+}
+
+/** A test table's name as SQL: as it is when it reads as a name, else in backticks. */
+export function sqlName(key) {
+  const plain = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(key) && !key.split('.').some((p) => RESERVED.has(p.toUpperCase()));
+  return plain ? key : '`' + key + '`';
 }
 
 /**

@@ -97,24 +97,30 @@ let reviewBeforeCopy = store.get('reviewBeforeCopy', '1') === '1';
 // A first visit starts empty; the example loads only from the card below or the ⋯ menu.
 const initial = store.get('doc', '');
 
-// What an empty editor shows: how to start, and the example query with its test tables.
-const pasteKey = matchMedia('(hover: none)').matches ? '' : /Mac|iPhone|iPad/.test(navigator.platform || '') ? ' (⌘V)' : ' (Ctrl+V)';
+// What an empty editor shows: how to start, querying a CSV / Excel file, and the
+// example query with its test tables.
+const touch = matchMedia('(hover: none)').matches;
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform || '');
+const pasteKey = touch ? '' : isMac ? ' (⌘V)' : ' (Ctrl+V)';
+const runKey = isMac ? '⌘Enter' : 'Ctrl+Enter';
 const emptyEl = document.createElement('div');
 emptyEl.className = 'editor-empty';
 emptyEl.innerHTML = `<div class="ee-card">
-  <b>Paste a query to start</b>
-  <p>Paste one here${pasteKey} and it is tidied up for you, or open a .sql file.</p>
+  <b>Paste a query, or query a CSV</b>
+  <p>Paste SQL here${pasteKey} and it is tidied up for you. ${touch ? 'Open' : 'Drop'} a CSV or Excel file ${touch ? '' : 'anywhere '}to run SQL on it, right in your browser.</p>
   <div class="ee-acts">
-    <button class="btn primary sm" data-act="sample">Load the example</button>
+    <button class="btn primary sm" data-act="csv">Query a CSV or Excel file…</button>
+    <button class="btn sm" data-act="sample">Load the example</button>
     <button class="btn sm" data-act="open">Open .sql file…</button>
   </div>
-  <small>The example is a short query on a made-up Pokédex, with 3 test tables to run it on in the Run tab.</small>
+  <small>Files stay in your browser: nothing is uploaded. The example is a short query on a made-up Pokédex, with 3 test tables to run it on.</small>
 </div>`;
 document.getElementById('editor').append(emptyEl);
 emptyEl.addEventListener('click', (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'sample') loadSample();
-  else if (act === 'open') openFile();
+  else if (act === 'open') openFile('sql');
+  else if (act === 'csv') openFile('table');
   else view.focus();
 });
 const syncEmpty = () => { emptyEl.hidden = view.state.doc.length > 0; };
@@ -133,12 +139,13 @@ const view = createEditor(document.getElementById('editor'), {
     { key: 'Mod-Shift-s', run: () => { saveFile(); return true; }, preventDefault: true },
   ],
   extensions: [EditorView.domEventHandlers({
-    // A .sql file dropped on the editor replaces the query (text drops still insert).
+    // A .sql file dropped on the editor replaces the query, a CSV / Excel file
+    // becomes a table to query (text drops still insert).
     drop(e) {
-      const file = e.dataTransfer?.files?.[0];
-      if (!file) return false;
+      const files = e.dataTransfer?.files;
+      if (!files?.length) return false;
       e.preventDefault();
-      readFile(file);
+      openFiles(files);
       return true;
     },
   })],
@@ -249,14 +256,87 @@ async function loadQuery(text, note, { format = formatOnPaste, detect = true } =
   view.focus();
 }
 
-// ---- open / save .sql files --------------------------------------------------------
-const fileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.sql,.txt,.bq,text/plain', hidden: true });
+// ---- open / save files -------------------------------------------------------------
+// A .sql file opens in the editor; CSV / Excel files become test tables (queryFiles).
+const ACCEPT = {
+  sql: '.sql,.txt,.bq,text/plain',
+  table: '.csv,.tsv,.xlsx,.xlsm,text/csv,text/tab-separated-values,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
+const fileInput = Object.assign(document.createElement('input'), { type: 'file', multiple: true, hidden: true });
 document.body.append(fileInput);
 fileInput.addEventListener('change', () => {
-  if (fileInput.files[0]) readFile(fileInput.files[0]);
+  openFiles(fileInput.files);
   fileInput.value = '';
 });
-function openFile() { fileInput.click(); }
+function openFile(kind) {
+  fileInput.accept = kind ? ACCEPT[kind] : `${ACCEPT.sql},${ACCEPT.table}`;
+  fileInput.click();
+}
+// .xls, .numbers and .ods count as tables so the import can say how to convert them.
+const isTableFile = (f) => /\.(csv|tsv|xlsx|xlsm|xls|numbers|ods)$/i.test(f.name) || /^text\/(csv|tab-separated-values)$/.test(f.type);
+function openFiles(list) {
+  const files = [...(list || [])];
+  const tables = files.filter(isTableFile);
+  if (tables.length) queryFiles(tables);
+  else if (files[0]) readFile(files[0]);
+}
+
+// CSV / Excel files become test tables in the Run tab. In an empty editor a query on
+// the first one goes in and runs: the shortest way from a file to SQL on its rows.
+async function queryFiles(files) {
+  setMView('panel');
+  graph.showTab('run');
+  const fresh = !view.state.doc.toString().trim();
+  const done = await (await loadRun()).addFiles(files);
+  if (!done.length) return;
+  track(fresh ? 'csv/query' : 'csv/add');
+  const n = (x) => x.toLocaleString();
+  const rows = (d) => (d.truncated ? `${n(d.rows)} of its ${n(d.total)} rows` : `${n(d.rows)} row${d.rows === 1 ? '' : 's'}`);
+  if (!fresh) {
+    // A file named like a table the query reads fills it; say how to query any other.
+    const loose = done.filter((d) => !d.query);
+    if (loose.length) toast(`Added ${loose.map((d) => `${d.file} as the table ${d.key} (${rows(d)})`).join(', ')} · query it with FROM ${loose[0].sql}`);
+    return;
+  }
+  const [d, ...more] = done;
+  const lines = [`-- ${d.file} is the table ${d.key} (${rows(d)}).`];
+  if (more.length) lines.push(`-- Also loaded: ${more.map((m) => m.key).join(', ')}.`);
+  lines.push(`-- ${touch ? 'The Run button' : runKey} runs the query again, here in your browser.`);
+  const sql = `${lines.join('\n')}\nSELECT *\nFROM ${d.sql}\nLIMIT 100;\n`;
+  // Test runs read BigQuery SQL.
+  const switched = !isBigQuery();
+  if (switched) await setDialect('bigquery', { quiet: true });
+  await loadQuery(sql, `Loaded ${d.file} as the table ${d.key}${switched ? ' · switched to BigQuery to run it' : ''}`, { format: false, detect: false });
+  runPanel.run('');
+}
+
+// Dragging files over the page says what a drop does. Drops on the test tables
+// dialog are its own (one table at a time); anywhere else goes to openFiles.
+const dropEl = document.createElement('div');
+dropEl.className = 'drop-overlay';
+dropEl.hidden = true;
+dropEl.innerHTML = '<div><b>Drop a CSV or Excel file to query it with SQL</b><span>It becomes a table here in your browser: nothing is uploaded. A .sql file opens in the editor.</span></div>';
+document.body.append(dropEl);
+const draggingFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+const tablesDialogOpen = () => !!document.querySelector('.tt-modal:not([hidden])');
+let dragDepth = 0;
+document.addEventListener('dragenter', (e) => {
+  if (!draggingFiles(e)) return;
+  dragDepth++;
+  dropEl.hidden = tablesDialogOpen();
+});
+document.addEventListener('dragleave', (e) => {
+  if (draggingFiles(e) && --dragDepth <= 0) { dragDepth = 0; dropEl.hidden = true; }
+});
+// Without this the browser would open a file dropped outside a drop zone in place of the app.
+document.addEventListener('dragover', (e) => { if (draggingFiles(e)) e.preventDefault(); });
+document.addEventListener('drop', (e) => {
+  dragDepth = 0;
+  dropEl.hidden = true;
+  if (e.defaultPrevented || !draggingFiles(e)) return;
+  e.preventDefault();
+  if (!tablesDialogOpen()) openFiles(e.dataTransfer.files);
+});
 async function readFile(file) {
   if (file.size > 20 * 1024 * 1024) { toast(`${file.name} is over 20 MB, too big to open`, 'error'); return; }
   let text;
@@ -604,7 +684,7 @@ const menuItem = (id, name, note, sw) => `<button class="tm-item" role="menuitem
   ${sw}<span class="tm-text"><b>${name}</b><small>${note}</small></span><span class="tm-check">✓</span></button>`;
 const actItem = (act, name, key = '') => `<button class="tm-item tm-act" role="menuitem" data-act="${act}"><span class="tm-text"><b>${name}</b></span>${key ? `<kbd>${key}</kbd>` : ''}</button>`;
 themeMenu.innerHTML =
-  actItem('paste', 'Paste &amp; format', '⌘A ⌘V') + actItem('open', 'Open .sql file…', '⌘O') + actItem('save', 'Save as .sql', '⌘⇧S') +
+  actItem('paste', 'Paste &amp; format', '⌘A ⌘V') + actItem('open', 'Open .sql, CSV or Excel file…', '⌘O') + actItem('save', 'Save as .sql', '⌘⇧S') +
   actItem('preview', 'Copy preview of this CTE', '⌘⌥↵') +
   actItem('run', 'Run on test data', '⌘↵') +
   '<div class="tm-sep"></div>' + actItem('sample', 'Load the example (Pokédex)') + actItem('clear', 'Clear editor') +

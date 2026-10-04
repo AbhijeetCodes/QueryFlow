@@ -37,8 +37,27 @@ function toast(msg, kind = 'ok') {
 let formatMod = null;
 const loadFormat = () => (formatMod ??= import('./format.js'));
 async function formatSql(src, dialect = currentDialect()) {
-  return (await loadFormat()).formatSql(src, dialect);
+  return (await loadFormat()).formatSql(src, dialect, formatOptions);
 }
+
+// Formatting options (the ⋯ menu's Formatting group): each item cycles through its values.
+const FORMAT_CHOICES = {
+  keywordCase: { label: 'Keywords', values: { upper: 'UPPER CASE', lower: 'lower case', preserve: 'As typed' } },
+  commas: { label: 'Commas', values: { trailing: 'End of line', leading: 'Start of line' } },
+  indent: { label: 'Indent', values: { 2: '2 spaces', 4: '4 spaces', tab: 'Tab' } },
+  compact: { label: 'Short lists', values: { true: 'On one line', false: 'One item per line' } },
+};
+const formatOptions = (() => {
+  let saved = {};
+  try { saved = JSON.parse(store.get('format', '{}')) || {}; } catch { /* default */ }
+  const o = {};
+  for (const [k, c] of Object.entries(FORMAT_CHOICES)) {
+    const v = String(saved[k]);
+    if (v in c.values) o[k] = k === 'compact' ? v === 'true' : v;
+  }
+  return o;
+})();
+const formatChoice = (k) => String(formatOptions[k] ?? Object.keys(FORMAT_CHOICES[k].values)[0]);
 
 // ---- formatting ------------------------------------------------------------
 async function formatDoc(view, { quiet = false, note = '' } = {}) {
@@ -47,7 +66,7 @@ async function formatDoc(view, { quiet = false, note = '' } = {}) {
   try {
     const fmt = await loadFormat();
     src = view.state.doc.toString(); // read after the await: typing may have changed it
-    out = fmt.formatSql(src, currentDialect());
+    out = fmt.formatSql(src, currentDialect(), formatOptions);
   } catch (err) {
     toast(`Couldn't format: ${String(err.message || err).split('\n')[0]}`, 'error');
     return;
@@ -464,6 +483,18 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
     fopItem.setAttribute('aria-checked', String(formatOnPaste));
     return;
   }
+  if (act === 'format-option') {
+    const k = e.target.closest('[data-opt]').dataset.opt;
+    const vals = Object.keys(FORMAT_CHOICES[k].values);
+    const v = vals[(vals.indexOf(formatChoice(k)) + 1) % vals.length];
+    formatOptions[k] = k === 'compact' ? v === 'true' : v;
+    store.set('format', JSON.stringify(formatOptions));
+    paintFormatOptions();
+    const what = `${FORMAT_CHOICES[k].label}: ${FORMAT_CHOICES[k].values[v]}`;
+    if (!(await formatDoc(view, { quiet: true, note: `${what} · ⌘Z to undo` }))) toast(what);
+    track('format-option/' + k);
+    return;
+  }
   if (act === 'detect-dialect') {
     detectOnPaste = !detectOnPaste;
     store.set('detectDialect', detectOnPaste ? '1' : '0');
@@ -514,6 +545,7 @@ const DIALECT_NOTES = {
   bigquery: '`proj.ds.t`, DECLARE, @params',
   postgres: '"Names", :: casts, $1 / :name',
   mysql: '`names`, SET @var, # comments',
+  sqlserver: '[names], DECLARE @var, TOP n, #temp',
 };
 const dialectBtn = document.querySelector('.dialect');
 const dialectMenu = document.querySelector('.dialect-menu');
@@ -690,6 +722,9 @@ themeMenu.innerHTML =
   '<div class="tm-sep"></div>' + actItem('sample', 'Load the example (Pokédex)') + actItem('clear', 'Clear editor') +
   `<div class="tm-sep"></div><button class="tm-item tm-act" role="menuitemcheckbox" data-act="format-on-paste"><span class="tm-text"><b>Format on paste</b></span><span class="tm-check">✓</span></button>` +
   `<button class="tm-item tm-act" role="menuitemcheckbox" data-act="detect-dialect"><span class="tm-text"><b>Detect dialect on paste</b></span><span class="tm-check">✓</span></button>` +
+  '<div class="tm-sep"></div><div class="tm-group">Formatting</div>' +
+  Object.entries(FORMAT_CHOICES).map(([k, c]) => `<button class="tm-item tm-act" role="menuitem" data-act="format-option" data-opt="${k}" title="Click to change">
+    <span class="tm-text"><b>${c.label}</b><small></small></span></button>`).join('') +
   '<div class="tm-sep"></div><div class="tm-group">Theme</div>' +
   menuItem('system', 'Match system', 'Paper or Midnight', '<span class="tsw system"></span>') +
   THEMES.map((t) => menuItem(t.id, t.name, `${t.kind} · ${t.note}`, swatch(t.id))).join('');
@@ -726,6 +761,12 @@ const fopItem = themeMenu.querySelector('[data-act="format-on-paste"]');
 fopItem.setAttribute('aria-checked', String(formatOnPaste));
 const detectItem = themeMenu.querySelector('[data-act="detect-dialect"]');
 detectItem.setAttribute('aria-checked', String(detectOnPaste));
+function paintFormatOptions() {
+  themeMenu.querySelectorAll('[data-opt]').forEach((el) => {
+    el.querySelector('small').textContent = FORMAT_CHOICES[el.dataset.opt].values[formatChoice(el.dataset.opt)];
+  });
+}
+paintFormatOptions();
 
 // ---- report a bug -------------------------------------------------------------
 // Two ways in: a GitHub issue for people with an account, or an email (Gmail,

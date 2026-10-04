@@ -7,7 +7,7 @@ import { dialectOf } from './dialect.js';
 
 const same = (r, t) => r.from === t.a && r.to === t.b;
 const within = (r, t) => r.from <= t.a && t.b <= r.to;
-const keyOf = (s) => s.replace(/[`"]/g, '').toLowerCase();
+const keyOf = (s) => s.replace(/[`"[\]]/g, '').toLowerCase();
 
 // The identifier / parameter token at `pos` (either edge counts, so `u|.id` finds `u`).
 function tokenAt(T, pos) {
@@ -40,7 +40,7 @@ export function resolveQualifier(a, pos, key) {
   for (const step of stepsAround(a, pos)) {
     for (const block of step.blocks || []) {
       for (const item of block) {
-        const k = (item.alias || (item.name || '').replace(/[`"]/g, '').split('.').pop() || '').toLowerCase();
+        const k = (item.alias || (item.name || '').replace(/[`"[\]]/g, '').split('.').pop() || '').toLowerCase();
         if (k === key) return { item, step };
       }
     }
@@ -165,8 +165,8 @@ export function renameEdits(a, sym, name) {
   }
   const changes = occurrences(sym).map((r) => {
     const old = a.src.slice(r.from, r.to);
-    const q = old[0] === '`' || old[0] === '"' ? old[0] : '';
-    const insert = sym.kind === 'param' ? name : q + name + q;
+    const q = old[0] === '`' || old[0] === '"' ? old[0] + old[0] : old[0] === '[' ? '[]' : '';
+    const insert = sym.kind === 'param' ? name : q ? q[0] + name + q[1] : name;
     return { from: r.from, to: r.to, insert };
   });
   return { changes };
@@ -232,9 +232,9 @@ export function previewSql(a, nodeId, { limit = 100 } = {}) {
     ...(prelude.length ? [prelude.join('\n'), ''] : []),
     `WITH${recursive} ` + parts.join(',\n\n'),
     '',
-    'SELECT *',
-    `FROM ${src.slice(target.def.from, target.def.to)}`,
-    `LIMIT ${limit};`,
+    ...(a.dialect === 'sqlserver'
+      ? [`SELECT TOP ${limit} *`, `FROM ${src.slice(target.def.from, target.def.to)};`]
+      : ['SELECT *', `FROM ${src.slice(target.def.from, target.def.to)}`, `LIMIT ${limit};`]),
     '',
   ].join('\n');
   return { sql, label: target.label, ctes: ctes.length };

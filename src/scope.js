@@ -26,7 +26,7 @@ function selectColumns(toks) {
     // `expr AS name`, a bare or dotted column, or an implicit alias (`SUM(x) total`).
     let name = '';
     if (word && (!prev || prev.u === 'AS' || prev.s === '.' || (prev.t !== 'op' && prev.s !== ','))) name = last.s;
-    cols.push(name.replace(/[`"]/g, ''));
+    cols.push(name.replace(/[`"[\]]/g, ''));
     item = [];
   };
   for (let i = sel + 1; i < s.length; i++) {
@@ -60,7 +60,7 @@ export function scopeAt(analysis, pos) {
   const step = stepAt(analysis, pos);
   for (const block of step?.blocks || []) {
     for (const item of block) {
-      const key = (item.alias || (item.name || '').replace(/[`"]/g, '').split('.').pop() || '').toLowerCase();
+      const key = (item.alias || (item.name || '').replace(/[`"[\]]/g, '').split('.').pop() || '').toLowerCase();
       if (key && !scope.has(key)) scope.set(key, item);
     }
   }

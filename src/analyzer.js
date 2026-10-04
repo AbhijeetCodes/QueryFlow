@@ -1,5 +1,5 @@
-// Heuristic, error-tolerant analysis of a SQL script (BigQuery, PostgreSQL or
-// MySQL; see dialect.js). It does not build a
+// Heuristic, error-tolerant analysis of a SQL script (BigQuery, PostgreSQL,
+// MySQL or SQL Server; see dialect.js). It does not build a
 // full AST — it walks tokens with paren depth, which survives the messy,
 // half-broken queries people paste far better than a strict parser.
 //
@@ -17,7 +17,10 @@ NATURAL NEW NO NOT NULL NULLS OF ON OR ORDER OUTER OVER PARTITION PRECEDING PROT
 RECURSIVE RESPECT RIGHT ROLLUP ROWS SELECT SET SOME STRUCT TABLESAMPLE THEN TO TREAT TRUE
 UNBOUNDED UNION UNNEST USING WHEN WHERE WINDOW WITH WITHIN`.split(/\s+/));
 
-const JOIN_WORDS = new Set(['JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'OUTER', 'STRAIGHT_JOIN']);
+const JOIN_WORDS = new Set(['JOIN', 'INNER', 'LEFT', 'RIGHT', 'FULL', 'CROSS', 'NATURAL', 'OUTER', 'STRAIGHT_JOIN', 'APPLY']);
+// SQL Server table hints: FROM t WITH (NOLOCK), or the older FROM t (NOLOCK)
+const TABLE_HINTS = new Set(['NOLOCK', 'READUNCOMMITTED', 'READCOMMITTED', 'READPAST', 'HOLDLOCK', 'UPDLOCK', 'ROWLOCK',
+  'PAGLOCK', 'TABLOCK', 'TABLOCKX', 'XLOCK', 'NOWAIT', 'SERIALIZABLE', 'REPEATABLEREAD', 'SNAPSHOT', 'INDEX', 'FORCESEEK', 'FORCESCAN', 'NOEXPAND']);
 const FROM_END = new Set(['WHERE', 'GROUP', 'HAVING', 'QUALIFY', 'WINDOW', 'ORDER', 'LIMIT',
   'UNION', 'INTERSECT', 'EXCEPT', 'SELECT']);
 const COMPARE = new Set(['=', '!=', '<>', '<', '>', '<=', '>=']);
@@ -43,6 +46,7 @@ export function analyzeDoc(doc, dialect = currentDialect()) {
 export function analyze(src, dialect) {
   const D = dialectOf(dialect);
   const BQ = D.id === 'bigquery';
+  const TSQL = D.id === 'sqlserver';
   const RES = reservedFor(D);
   const all = tokenize(src, D.id);
   const T = all.filter((t) => t.t !== 'ws' && t.t !== 'comment');
@@ -96,6 +100,25 @@ export function analyze(src, dialect) {
     return one.length > max ? one.slice(0, max - 1) + '…' : one;
   };
   const isName = (i) => i < N && (T[i].t === 'qident' || (T[i].t === 'ident' && !RES.has(T[i].u)));
+  const lineStartAt = (pos) => src.lastIndexOf('\n', pos - 1) + 1;
+
+  // SQL Server: does token i (depth 0, inside the statement that starts at s)
+  // begin a new statement although no `;` came before it?
+  function startsStatement(i, s, selects) {
+    const w = up(i);
+    const first = up(s);
+    if (!w) return false;
+    if (w === 'DECLARE') return true;
+    // after DECLARE / SET, a query or control-flow keyword starts the next statement
+    if ((first === 'DECLARE' || first === 'SET') && ['SELECT', 'WITH', 'IF', 'WHILE', 'BEGIN', 'RETURN'].includes(w)) return true;
+    if (w === 'SET') return T[i + 1]?.t === 'param' && first !== 'UPDATE' && first !== 'MERGE';
+    // A second SELECT is a new statement unless a set operator joins them.
+    if (w === 'SELECT') return selects > 0 && !['UNION', 'ALL', 'DISTINCT', 'INTERSECT', 'EXCEPT'].includes(up(i - 1)) && txt(i - 1) !== '(';
+    if (w === 'WITH') return (T[i + 1]?.t === 'ident' || T[i + 1]?.t === 'qident') && (is(i + 2, 'AS') || txt(i + 2) === '(');
+    if (['CREATE', 'DROP', 'TRUNCATE', 'EXEC', 'EXECUTE', 'PRINT'].includes(w)) return first !== 'ALTER';
+    if (['INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(w)) return first !== 'MERGE' && !is(i - 1, 'THEN') && !is(i - 1, 'FOR');
+    return false;
+  }
 
   function isSubqueryStart(i) {
     while (i < N && txt(i) === '(' && T[i].t === 'punct') i++;
@@ -118,8 +141,8 @@ export function analyze(src, dialect) {
           chunk += '-' + T[j + 1].s;
           j += 2;
         }
-        // `proj.ds.t` is one quoted path; a dot inside "…" is part of the name
-        parts.push(...(t.s[0] === '"' ? [chunk] : chunk.split('.')));
+        // `proj.ds.t` is one quoted path; a dot inside "…" or […] is part of the name
+        parts.push(...(t.s[0] === '"' || t.s[0] === '[' ? [chunk] : chunk.split('.')));
         prevEnd = j - 1;
         k = j;
         if (txt(k) === '.' && k + 1 < N && (T[k + 1].t === 'ident' || T[k + 1].t === 'qident')) {
@@ -132,6 +155,12 @@ export function analyze(src, dialect) {
     }
     if (!parts.length) return null;
     return { parts, end: k, fromTok: from, toTok: prevEnd, from: T[from].a, to: T[prevEnd].b, text: src.slice(T[from].a, T[prevEnd].b) };
+  }
+
+  // A table name: a path, or in SQL Server also a table variable (@t)
+  function readTarget(k) {
+    if (TSQL && T[k]?.t === 'param') return { parts: [T[k].s], end: k + 1, fromTok: k, toTok: k, from: T[k].a, to: T[k].b, text: T[k].s };
+    return readPath(k);
   }
 
   // Walk back from token j over a path (a.b.c) — returns start index or -1
@@ -238,11 +267,15 @@ export function analyze(src, dialect) {
     let j = k;
     let type = null;
     let natural = false;
+    let outer = false;
     while (j < N && depth[j] === sd && T[j].t === 'ident' && JOIN_WORDS.has(T[j].u)) {
       const w = T[j].u;
       if (w === 'JOIN' || w === 'STRAIGHT_JOIN') {
         return { type: type || 'INNER', end: j + 1, natural, explicit: !!type };
       }
+      // SQL Server: CROSS APPLY is an inner lateral join, OUTER APPLY a left one; neither has ON.
+      if (w === 'APPLY') return type === 'CROSS' || outer ? { type: outer ? 'LEFT' : 'CROSS', end: j + 1, natural, explicit: true, apply: true } : null;
+      if (w === 'OUTER') outer = true;
       if (w === 'NATURAL') natural = true;
       else if (w !== 'OUTER' && !type) type = w;
       j++;
@@ -333,13 +366,16 @@ export function analyze(src, dialect) {
     let joinType = 'FROM';
     let joinTok = k - 1;
     let natural = false;
+    let apply = false;
     while (k < b) {
       // Postgres: JOIN LATERAL (subquery), FROM ONLY parent_table
       if ((is(k, 'LATERAL') || is(k, 'ONLY')) && T[k + 1] && (txt(k + 1) === '(' || T[k + 1].t === 'ident' || T[k + 1].t === 'qident')) k++;
       const t = T[k];
       if (!t) break;
       const item = { joinType, alias: null, nodeId: null, name: null, kind: 'table', keys: [], onText: null, natural, from: T[joinTok]?.a ?? t.a };
+      if (apply) item.apply = true;
       natural = false;
+      apply = false;
       if (t.s === '(' && t.t === 'punct') {
         const close = closeOf(k, b);
         if (isSubqueryStart(k + 1)) {
@@ -371,9 +407,10 @@ export function analyze(src, dialect) {
         item.name = slice(k, j);
         item.kind = 'legacy';
         k = j + 1;
-      } else if (t.t === 'ident' || t.t === 'qident') {
-        const p = readPath(k);
+      } else if (t.t === 'ident' || t.t === 'qident' || (TSQL && t.t === 'param')) {
+        const p = readTarget(k);
         k = p.end;
+        if (TSQL && txt(k) === '(' && TABLE_HINTS.has(up(k + 1))) k = closeOf(k, b) + 1; // FROM t (NOLOCK)
         if (txt(k) === '(' && T[k].t === 'punct') {
           // table-valued function
           const close = closeOf(k, b);
@@ -426,6 +463,7 @@ export function analyze(src, dialect) {
         if (is(k, 'AS')) k++;
         if (isName(k)) k++;
       }
+      if (TSQL && is(k, 'WITH') && txt(k + 1) === '(') k = closeOf(k + 1, b) + 1; // WITH (NOLOCK)
       if (is(k, 'TABLESAMPLE')) {
         k++;
         if (is(k, 'SYSTEM')) k++;
@@ -466,7 +504,7 @@ export function analyze(src, dialect) {
         item.keys = cols.map((c) => ({ left: c, right: c }));
         item.onText = `USING (${cols.join(', ')})`;
         k = close + 1;
-      } else if (!['FROM', 'COMMA', 'CROSS'].includes(item.joinType) && !item.natural &&
+      } else if (!['FROM', 'COMMA', 'CROSS'].includes(item.joinType) && !item.natural && !item.apply &&
                  !['unnest', 'group'].includes(item.kind) && item.joinType !== 'FROM') {
         diags.push({ from: item.from, to: T[Math.max(0, k - 1)].b, severity: 'error',
           message: `${item.joinType} JOIN without ON or USING — add a join condition` });
@@ -492,6 +530,7 @@ export function analyze(src, dialect) {
         joinType = jt.type;
         k = jt.end;
         natural = jt.natural;
+        apply = !!jt.apply;
         continue;
       }
       break;
@@ -712,6 +751,14 @@ export function analyze(src, dialect) {
           }
         }
         if (is(j, 'ALL')) j++;
+        // SQL Server: TOP n / TOP (n) [PERCENT] [WITH TIES]
+        if (TSQL && is(j, 'TOP')) {
+          const paren = txt(j + 1) === '(' && match[j + 1] > j;
+          if (c.branch === 0) sh.limit = squash(paren ? slice(j + 2, match[j + 1] - 1) : slice(j + 1, j + 1), 20);
+          j = paren ? match[j + 1] + 1 : j + 2;
+          if (is(j, 'PERCENT')) j++;
+          if (is(j, 'WITH') && is(j + 1, 'TIES')) j += 2;
+        }
         if (is(j, 'AS') && (is(j + 1, 'STRUCT') || is(j + 1, 'VALUE'))) j += 2;
         const items = splitTop(j, end, sd, ',').map(([x, y]) => ({ x, y, alias: selectItemAlias(x, y) }));
         if (c.branch === 0 && !firstItems) {
@@ -892,13 +939,14 @@ export function analyze(src, dialect) {
           c.items = lastFromItems;
           continue;
         }
-        if (w === 'SELECT' || w === 'WHERE' || w === 'HAVING' || w === 'QUALIFY' || w === 'LIMIT' || w === 'WINDOW') {
+        if (w === 'SELECT' || w === 'WHERE' || w === 'HAVING' || w === 'QUALIFY' || w === 'LIMIT' || w === 'WINDOW' ||
+            (w === 'INTO' && clauses[clauses.length - 1]?.kw === 'SELECT')) {
           clauses.push({ kw: w, i: k, body: k + 1, branch });
         } else if ((w === 'GROUP' || w === 'ORDER') && is(k + 1, 'BY')) {
           clauses.push({ kw: w + ' BY', i: k, body: k + 2, branch });
         }
         if (w === 'ORDER' && is(k + 1, 'BY')) orderTok = k;
-        else if (w === 'LIMIT') hasLimit = true;
+        else if (w === 'LIMIT' || (!BQ && (w === 'OFFSET' || w === 'FETCH')) || (w === 'TOP' && ['SELECT', 'DISTINCT', 'ALL'].includes(up(k - 1)))) hasLimit = true;
         else if (w === 'UNION' || w === 'INTERSECT' || (w === 'EXCEPT' && (txt(k + 1) !== '(' || isSubqueryStart(k + 1)))) {
           clauses.push({ kw: 'SETOP', i: k, body: k + 1, branch });
           branch++;
@@ -915,8 +963,10 @@ export function analyze(src, dialect) {
     if (!opts.inline && clauses.length) recordShape(owner, clauses, b, sd);
     checkOuterJoins(clauses, b, sd);
     if (opts.nested && !opts.inline && orderTok >= 0 && !hasLimit && !shapes.get(owner)?.distinctOn) {
-      diags.push({ from: T[orderTok].a, to: T[orderTok + 1].b, severity: 'info',
-        message: `ORDER BY inside a ${opts.kind === 'cte' ? 'CTE' : 'subquery'} without LIMIT does not affect the final result` });
+      const where = opts.kind === 'cte' ? 'CTE' : 'subquery';
+      diags.push(TSQL
+        ? { from: T[orderTok].a, to: T[orderTok + 1].b, severity: 'error', message: `SQL Server does not allow ORDER BY in a ${where} without TOP or OFFSET … FETCH` }
+        : { from: T[orderTok].a, to: T[orderTok + 1].b, severity: 'info', message: `ORDER BY inside a ${where} without LIMIT does not affect the final result` });
     }
     if (pushed) cteStack.pop();
   }
@@ -925,17 +975,48 @@ export function analyze(src, dialect) {
   const stmts = [];
   {
     let s = 0;
+    let selects = 0; // depth-0 SELECTs in the current statement
     for (let i = 0; i < N; i++) {
       if (T[i].s === ';' && depth[i] === 0) {
         stmts.push([s, i]);
         s = i + 1;
+        selects = 0;
+        continue;
       }
+      if (!TSQL || depth[i] !== 0) continue;
+      // SQL Server scripts often leave out the semicolons, and GO ends a batch.
+      if (is(i, 'GO') && T[i].a === lineStartAt(T[i].a)) {
+        if (i > s) stmts.push([s, i]);
+        s = i + 1;
+        selects = 0;
+        continue;
+      }
+      if (i > s && startsStatement(i, s, selects)) {
+        stmts.push([s, i]);
+        s = i;
+        selects = 0;
+      }
+      if (is(i, 'SELECT')) selects++;
     }
     if (s < N) stmts.push([s, N]);
   }
-  const resultStmts = stmts.filter(([s]) => ['SELECT', 'WITH'].includes(up(s)) || txt(s) === '(').length;
+  // The table of `SELECT … INTO t FROM …` in statement [s, e), or null.
+  function selectInto(s, e) {
+    if (!TSQL && D.id !== 'postgres') return null;
+    let j = s;
+    while (j < e && !(depth[j] === 0 && is(j, 'SELECT'))) j++;
+    for (; j < e && !(depth[j] === 0 && is(j, 'FROM')); j++) {
+      if (depth[j] === 0 && is(j, 'INTO') && (T[j + 1]?.t === 'ident' || T[j + 1]?.t === 'qident')) return readPath(j + 1);
+    }
+    return null;
+  }
+
+  // A statement's end: after its `;`, or its last token when GO or the next statement ends it.
+  function stmtEndAt(e) { return txt(e) === ';' ? T[e].b : T[e - 1].b; }
+  const resultStmts = stmts.filter(([s, e]) => (['SELECT', 'WITH'].includes(up(s)) || txt(s) === '(') && !selectInto(s, e)).length;
 
   const variables = [];
+  const assignTargets = new Set(); // SQL Server: where SET @x = … writes a variable (not a use)
   const inDeclare = new Uint8Array(N); // tokens of variable-defining statements
   let lastDeclareEnd = -1; // char offset after the last leading DECLARE / SET @var statement
   let seenOther = false;
@@ -958,7 +1039,7 @@ export function analyze(src, dialect) {
     const [s, e] = stmts[si];
     if (s >= e) continue;
     const first = up(s);
-    const stmtEnd = T[e]?.b ?? T[e - 1].b;
+    const stmtEnd = stmtEndAt(e);
 
     if (first === 'DECLARE' && D.vars === 'declare') {
       for (let i = s; i < e; i++) inDeclare[i] = 1;
@@ -992,6 +1073,33 @@ export function analyze(src, dialect) {
       continue;
     }
 
+    // SQL Server: DECLARE @a INT = 1, @b DATE;  The names keep their @.
+    if (first === 'DECLARE' && D.vars === 'tsql') {
+      for (let i = s; i < e; i++) inDeclare[i] = 1;
+      for (const [x, y] of splitTop(s + 1, e, 0, ',')) {
+        if (T[x].t !== 'param') continue;
+        let eq = -1;
+        for (let j = x + 1; j < y; j++) if (txt(j) === '=' && depth[j] === 0) { eq = j; break; }
+        const k = is(x + 1, 'AS') ? x + 2 : x + 1;
+        const typeEnd = eq >= 0 ? eq : y;
+        const v = { kind: 'declare', names: [T[x].s], nameToks: [{ from: T[x].a, to: T[x].b }], type: typeEnd > k ? slice(k, typeEnd - 1) : '', stmt: { from: T[s].a, to: stmtEnd }, refs: [] };
+        if (eq >= 0) setValue(v, eq + 1, y - 1);
+        variables.push(v);
+        marks.push({ from: T[x].a, to: T[x].b, cls: 'cm-lens-var cm-lens-def' });
+      }
+      if (!seenOther) lastDeclareEnd = stmtEnd;
+      continue;
+    }
+    // … and SET @b = '2024-01-01': the value of a variable declared without one.
+    if (first === 'SET' && D.vars === 'tsql' && T[s + 1]?.t === 'param' && txt(s + 2) === '=') {
+      for (let i = s; i < e; i++) inDeclare[i] = 1;
+      assignTargets.add(T[s + 1].a);
+      const v = variables.find((x) => x.names[0].toLowerCase() === T[s + 1].s.toLowerCase());
+      if (v && !v.edit) { setValue(v, s + 3, e - 1); v.stmt = { from: v.stmt.from, to: stmtEnd }; }
+      if (!seenOther) lastDeclareEnd = stmtEnd;
+      continue;
+    }
+
     // MySQL user variables: SET @a = 1, @b := 'x';  The names keep their @.
     if (first === 'SET' && D.vars === 'set' && T[s + 1]?.t === 'param') {
       for (let i = s; i < e; i++) inDeclare[i] = 1;
@@ -1011,6 +1119,7 @@ export function analyze(src, dialect) {
 
     let k = s;
     let owner;
+    let into;
     if (first === 'CREATE') {
       let temp = false;
       let j = s + 1;
@@ -1024,6 +1133,7 @@ export function analyze(src, dialect) {
       const p = readPath(j);
       if (!p) continue;
       const full = p.parts.join('.');
+      if (full.startsWith('#')) temp = true; // SQL Server #temp tables
       owner = (temp ? 'tmp:' : 'tbl:') + full.toLowerCase();
       ensureNode(owner, { kind: 'created', label: p.parts[p.parts.length - 1], sub: temp ? 'temp table' : p.parts.slice(0, -1).join('.'), full, def: { from: p.from, to: p.to } });
       nodes.get(owner).kind = 'created';
@@ -1038,7 +1148,7 @@ export function analyze(src, dialect) {
     } else if (first === 'INSERT' || first === 'MERGE' || first === 'UPDATE' || first === 'DELETE') {
       let j = s + 1;
       if (is(j, 'INTO') || is(j, 'FROM')) j++;
-      const p = readPath(j);
+      const p = readTarget(j);
       if (!p) continue;
       const full = p.parts.join('.');
       owner = created.get(full.toLowerCase()) || 'tbl:' + full.toLowerCase();
@@ -1047,6 +1157,17 @@ export function analyze(src, dialect) {
       nodes.get(owner).refs.push({ from: p.from, to: p.to });
       marks.push({ from: p.from, to: p.to, cls: 'cm-lens-table cm-lens-def' });
       k = p.end;
+    } else if ((into = selectInto(s, e))) {
+      // SELECT … INTO new_table FROM … (SQL Server, Postgres) creates the table
+      const p = into;
+      const full = p.parts.join('.');
+      const temp = full.startsWith('#');
+      owner = (temp ? 'tmp:' : 'tbl:') + full.toLowerCase();
+      ensureNode(owner, { kind: 'created', label: p.parts[p.parts.length - 1], sub: temp ? 'temp table' : p.parts.slice(0, -1).join('.'), full, def: { from: p.from, to: p.to } });
+      nodes.get(owner).kind = 'created';
+      nodes.get(owner).refs.push({ from: p.from, to: p.to });
+      marks.push({ from: p.from, to: p.to, cls: 'cm-lens-table cm-lens-def' });
+      created.set(full.toLowerCase(), owner);
     } else {
       resultCount++;
       owner = 'result:' + resultCount;
@@ -1067,10 +1188,10 @@ export function analyze(src, dialect) {
   }
 
   // ---- variables: references & shadowing ---------------------------------
-  // BigQuery variables are bare names; MySQL ones are @name (param tokens).
+  // BigQuery variables are bare names; MySQL and SQL Server ones are @name (param tokens).
   const varByName = new Map();
   for (const v of variables) for (const n of v.names) varByName.set(n.toLowerCase(), v);
-  const varTok = D.vars === 'set' ? 'param' : 'ident';
+  const varTok = D.vars === 'set' || D.vars === 'tsql' ? 'param' : 'ident';
   const isVarDef = (t) => variables.some((v) => v.nameToks.some((nt) => nt.from === t.a));
   const qualifiedNames = new Set();
   for (let i = 1; i < N; i++) {
@@ -1088,7 +1209,7 @@ export function analyze(src, dialect) {
   for (const v of variables) {
     v.names.forEach((name, idx) => {
       const nt = v.nameToks[idx];
-      if (!v.refs.length) {
+      if (!v.refs.some((r) => !assignTargets.has(r.from))) {
         diags.push({ from: nt.from, to: nt.to, severity: 'warning', message: `Variable "${name}" is ${v.kind === 'set' ? 'set' : 'declared'} but never used` });
       }
       if (BQ && qualifiedNames.has(name.toLowerCase())) {
@@ -1323,17 +1444,17 @@ export function analyze(src, dialect) {
     const sh = n?.shape;
     if (!sh || !['cte', 'subquery'].includes(n.kind)) return null;
     if (sh.dedupe?.where === 'QUALIFY' || sh.dedupe?.where === 'DISTINCT ON') {
-      const per = sh.dedupe.per.split(',').map((s) => s.trim().split('.').pop().replace(/[`"]/g, ''));
+      const per = sh.dedupe.per.split(',').map((s) => s.trim().split('.').pop().replace(/[`"[\]]/g, ''));
       return per.every((c) => /^\w+$/.test(c)) ? per : null;
     }
     return sh.grain || null;
   };
   // Columns of `alias` that a join's equality keys use (`alias.col = other.col`, or USING).
-  const pathAlias = (p) => { const x = p.replace(/[`"]/g, '').split('.'); return x.length === 2 && /^\w+$/.test(x[1]) ? [x[0].toLowerCase(), x[1]] : null; };
+  const pathAlias = (p) => { const x = p.replace(/[`"[\]]/g, '').split('.'); return x.length === 2 && /^\w+$/.test(x[1]) ? [x[0].toLowerCase(), x[1]] : null; };
   function sideCols(it, alias, other) {
     const cols = [];
     for (const k of it.keys || []) {
-      if (!k.left.includes('.') && !k.right.includes('.')) { cols.push(k.left.replace(/[`"]/g, '')); continue; } // USING
+      if (!k.left.includes('.') && !k.right.includes('.')) { cols.push(k.left.replace(/[`"[\]]/g, '')); continue; } // USING
       const l = pathAlias(k.left);
       const r = pathAlias(k.right);
       if (!l || !r) continue;
@@ -1362,7 +1483,7 @@ export function analyze(src, dialect) {
       const earlier = items.slice(0, j).map(itemKey).filter(Boolean);
       const using = (it.keys || []).length && it.keys.every((k) => !k.left.includes('.'));
       // This item's key: if it repeats, every earlier row comes back once per copy.
-      const own = using ? it.keys.map((k) => k.left.replace(/[`"]/g, '')) : [...new Set(earlier.flatMap((p) => sideCols(it, me, p)))];
+      const own = using ? it.keys.map((k) => k.left.replace(/[`"[\]]/g, '')) : [...new Set(earlier.flatMap((p) => sideCols(it, me, p)))];
       if (me && own.length) n.joinSides.push({ item: it, nodeId: it.nodeId, alias: me, cols: own, repeats: earlier });
       // The earlier side's key: if it repeats, each row of this item comes back once per copy.
       const others = using ? (j === 1 ? [earlier[0]] : []) : earlier;
@@ -1568,7 +1689,7 @@ export function analyze(src, dialect) {
       // Postgres cast: '2024-01-01'::date
       if (j >= i + 2 && txt(j - 1) === '::' && T[j].t === 'ident') return resolve(i, j - 2, hop + 1);
       if (i === j && t.t === 'ident' && TODAY.test(t.u)) return { day: today, fmt: 'iso', relative: true, src: { kind: 'expr', name: t.u } };
-      if (i === j && t.t === 'param' && D.vars === 'set') return varDate.get(t.s.toLowerCase()) || null;
+      if (i === j && t.t === 'param' && (D.vars === 'set' || D.vars === 'tsql')) return varDate.get(t.s.toLowerCase()) || null;
       if (i === j && t.t === 'string') {
         const d = parseDay(src.slice(stringInner(t).from, stringInner(t).to));
         return d && { ...d, src: { kind: 'literal', edit: { ...stringInner(t), kind: 'string' } } };
@@ -1755,8 +1876,8 @@ export function analyze(src, dialect) {
     // Script statements, ';' included. kind: declare | set | function (CREATE TEMP FUNCTION) | other
     statements: stmts.filter(([s, e]) => s < e).map(([s, e]) => ({
       from: T[s].a,
-      to: (T[e] ?? T[e - 1]).b,
-      kind: up(s) === 'DECLARE' && BQ ? 'declare' : up(s) === 'SET' ? 'set'
+      to: stmtEndAt(e),
+      kind: up(s) === 'DECLARE' && (BQ || TSQL) ? 'declare' : up(s) === 'SET' ? 'set'
         : up(s) === 'CREATE' && T.slice(s + 1, Math.min(e, s + 6)).some((t) => t.u === 'FUNCTION') ? 'function' : 'other',
     })),
     graph: { nodes: nodeList, edges: edgeList },
@@ -1804,7 +1925,7 @@ function detectDedupe(nodes, edges) {
       const consumer = byId.get(e.to);
       for (const w of ranks) {
         // A join without AS is referred to by its own name (`LEFT JOIN tx ON … tx.rn = 1`).
-        const aliasOf = (j) => j.alias || (j.name || '').split('.').pop().replace(/[`"]/g, '');
+        const aliasOf = (j) => j.alias || (j.name || '').split('.').pop().replace(/[`"[\]]/g, '');
         const onHit = e.joins.find((j) => j.onText && aliasOf(j) && isFirst(j.onText, `${aliasOf(j)}\\.${w.alias}`));
         const whereHit = consumer?.shape?.filters.some((f) =>
           e.joins.some((j) => aliasOf(j) && isFirst(f, `${aliasOf(j)}\\.${w.alias}`)) || (n.out.length === 1 && isFirst(f, w.alias)));

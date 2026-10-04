@@ -69,7 +69,30 @@ where rank_in_team = 1
 order by total_stats desc
 `;
 
-export const SAMPLES = { bigquery: SAMPLE_SQL, postgres: SAMPLE_POSTGRES, mysql: SAMPLE_MYSQL };
+export const SAMPLE_SQLSERVER = `-- Example: each trainer's strongest Pokémon
+declare @caught_since date = '2024-01-01';
+declare @min_level int = 20;
+
+with team as (
+  select trainer_id, pokemon_id, level from pokedex.teams
+  where caught_on >= @caught_since and level >= @min_level
+), stats as (
+  select pokemon_id, name, type, hp + attack + defense + speed as total_stats from pokedex.pokemon
+  where is_legendary = 0
+), ranked as (
+  select tr.name as trainer, s.name as pokemon, s.type, t.level, s.total_stats,
+    row_number() over (partition by tr.trainer_id order by s.total_stats desc) as rank_in_team
+  from team t
+  join stats s on s.pokemon_id = t.pokemon_id
+  join pokedex.trainers tr on tr.trainer_id = t.trainer_id
+  where tr.region in ('Kanto', 'Johto')
+), legendaries as (select * from pokedex.pokemon where is_legendary = 1)
+select top 10 trainer, pokemon, type, level, total_stats from ranked
+where rank_in_team = 1
+order by total_stats desc
+`;
+
+export const SAMPLES = { bigquery: SAMPLE_SQL, postgres: SAMPLE_POSTGRES, mysql: SAMPLE_MYSQL, sqlserver: SAMPLE_SQLSERVER };
 
 // The example reads the practice database (src/practice.js).
 export { PRACTICE_TABLES as SAMPLE_TABLES } from './practice.js';

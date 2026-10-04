@@ -11,6 +11,9 @@ const JOIN_CLASS = { FROM: 'from', INNER: 'inner', LEFT: 'left', RIGHT: 'right',
 const KIND_LABEL = { table: 'table', cte: 'CTE', subquery: 'subquery', result: 'output', created: 'output' };
 
 let measureCtx;
+// SQL Server: CROSS APPLY / OUTER APPLY (read as CROSS / LEFT joins)
+const applyText = (j) => (j.joinType === 'LEFT' ? 'OUTER APPLY' : 'CROSS APPLY');
+
 function textWidth(s, font) {
   measureCtx ??= document.createElement('canvas').getContext('2d');
   measureCtx.font = font;
@@ -673,7 +676,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
   function renderDetail(n, byId) {
     const nameOf = (id) => byId.get(id)?.label ?? id;
     const blocks = [...n.blocks].sort((x, y) => !!x.inline - !!y.inline).map((items) => (items.inline ? `<div class="union-sep">${esc(inlineHeading(items.inline))}</div>` : '') + items.map((it) => {
-      const kw = it.joinType === 'FROM' ? 'FROM' : it.joinType === 'COMMA' ? ', (cross)' : `${it.joinType} JOIN`;
+      const kw = it.joinType === 'FROM' ? 'FROM' : it.joinType === 'COMMA' ? ', (cross)' : it.apply ? applyText(it) : `${it.joinType} JOIN`;
       const src = it.nodeId
         ? `<button class="link" data-node="${esc(it.nodeId)}">${esc(it.kind === 'subquery' ? '(subquery)' : nameOf(it.nodeId))}</button>`
         : `<span class="muted">${esc(it.name)}</span>`;
@@ -852,7 +855,7 @@ export function createGraphPanel(root, { view, onSelect, onPreview, onRunTab, on
       const cls = derive ? 'derive' : semi ? 'semi' : edgeClass(e);
       const text = derive ? '' : semi ? semiEdgeText(e) : edgeText(e);
       const dashed = !derive && !semi && (e.role === 'lookup' || byId.get(e.from)?.kind === 'subquery' || e.joins.every((j) => j.kind === 'subquery')) ? ' dashed' : '';
-      const title = e.joins.map((j) => `${j.joinType === 'FROM' ? 'FROM' : j.joinType + ' JOIN'} ${j.name}${j.alias ? ' ' + j.alias : ''}${j.onText ? '\n  ' + j.onText : ''}`).join('\n');
+      const title = e.joins.map((j) => `${j.joinType === 'FROM' ? 'FROM' : j.apply ? applyText(j) : j.joinType + ' JOIN'} ${j.name}${j.alias ? ' ' + j.alias : ''}${j.onText ? '\n  ' + j.onText : ''}`).join('\n');
       const sub = derive || semi ? '' : e.withText;
       const two = text && sub;
       const lbl = (text || sub) && Number.isFinite(d.x) && Number.isFinite(d.y)

@@ -89,7 +89,7 @@ export function createStepsView(root, { onPick, onRange }) {
         name = `<span class="s-src unnest">${esc(it.name)}</span>`;
       }
       return `<li class="r-item">
-        <span class="jp ${jc}">${esc(JOIN_TEXT[it.joinType] || it.joinType)}</span>
+        <span class="jp ${jc}">${esc(it.apply ? (it.joinType === 'LEFT' ? 'OUTER APPLY' : 'CROSS APPLY') : JOIN_TEXT[it.joinType] || it.joinType)}</span>
         <div class="r-main">${name}${it.alias && !(src && src.kind === 'subquery') ? ` <span class="alias">${esc(it.alias)}</span>` : ''}
           ${kt ? `<span class="keys">on ${esc(kt)}</span>` : ''}
           ${on ? `<div class="on">${it.onText.startsWith('USING') ? '' : 'on '}${esc(on)}</div>` : ''}

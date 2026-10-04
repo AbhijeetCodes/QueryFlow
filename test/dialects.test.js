@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { tokenize, unquoteIdent } from '../src/tokenizer.js';
 import { analyze } from '../src/analyzer.js';
 import { formatSql } from '../src/format.js';
-import { symbolAt, renameEdits, canRename } from '../src/symbols.js';
+import { symbolAt, renameEdits, canRename, previewSql } from '../src/symbols.js';
 import { quoteTable, detectDialect } from '../src/dialect.js';
 import { SAMPLES } from '../src/sample.js';
 
@@ -117,7 +117,7 @@ test('rename keeps each dialect’s sigils and quotes', () => {
 });
 
 test('samples: each dialect formats idempotently and reads the same shape', () => {
-  for (const d of ['bigquery', 'postgres', 'mysql']) {
+  for (const d of ['bigquery', 'postgres', 'mysql', 'sqlserver']) {
     const out = formatSql(SAMPLES[d], d);
     assert.equal(formatSql(out, d), out, d);
     const a = analyze(out, d);
@@ -128,17 +128,25 @@ test('samples: each dialect formats idempotently and reads the same shape', () =
   const pg = formatSql(SAMPLES.postgres, 'postgres');
   assert.match(pg, /SELECT DISTINCT ON \(tr\.trainer_id\)\n {4}tr\.name AS trainer,/);
   assert.match(formatSql(SAMPLES.mysql, 'mysql'), /^SET @caught_since = '2024-01-01';\nSET @min_level = 20;/m);
+  const ms = formatSql(SAMPLES.sqlserver, 'sqlserver');
+  assert.match(ms, /^DECLARE @caught_since DATE = '2024-01-01';\nDECLARE @min_level INT = 20;/m);
+  assert.match(ms, /^ {4}name,\n {4}type,\n {4}hp \+/m); // a column called type stays a column
+  assert.match(ms, /^SELECT TOP 10\n {2}trainer,/m);
 });
 
 test('table names are quoted the way each dialect writes them', () => {
   assert.equal(quoteTable('proj.ds.t', 'bigquery'), '`proj.ds.t`');
   assert.equal(quoteTable('public.Orders', 'postgres'), 'public."Orders"');
   assert.equal(quoteTable('shop.order items', 'mysql'), 'shop.`order items`');
+  assert.equal(quoteTable('dbo.Order Details', 'sqlserver'), 'dbo.[Order Details]');
 });
 
 test('detectDialect: clear clues pick a dialect, weak or mixed ones pick none', () => {
   const id = (sql) => detectDialect(sql)?.id ?? null;
-  for (const d of ['bigquery', 'postgres', 'mysql']) assert.equal(id(SAMPLES[d]), d);
+  for (const d of ['bigquery', 'postgres', 'mysql', 'sqlserver']) assert.equal(id(SAMPLES[d]), d);
+  assert.equal(id('SELECT TOP 10 * FROM dbo.[Orders] o WITH (NOLOCK)'), 'sqlserver');
+  assert.equal(id('SELECT ISNULL(a, 0) FROM t CROSS APPLY dbo.f(t.id) x'), 'sqlserver');
+  assert.equal(id("SET @x = 1; SELECT GETDATE()"), null); // MySQL SET @x vs a SQL Server function
   assert.equal(id("SELECT * FROM `proj.ds.events` WHERE _PARTITIONDATE >= '2024-01-01'"), 'bigquery');
   assert.equal(id('SELECT * EXCEPT (secret) FROM t QUALIFY ROW_NUMBER() OVER (PARTITION BY id) = 1'), 'bigquery');
   assert.equal(id("SELECT id::text FROM t WHERE name ILIKE '%x%'"), 'postgres');
@@ -155,4 +163,72 @@ test('detectDialect: clear clues pick a dialect, weak or mixed ones pick none', 
   assert.equal(id("-- try ::casts, QUALIFY, LIMIT 1, 2\nSELECT 'a::b', '#1 GROUP_CONCAT(' FROM t /* DISTINCT ON ( */"), null);
   // Clues for two dialects at once: no switch
   assert.equal(id('SELECT x::date FROM `proj.ds.t`'), null);
+});
+
+test('tokenizer: SQL Server brackets, #temp tables, N strings, @vars', () => {
+  assert.deepEqual(toks("SELECT [Order ]]Id], N'it''s', @d, @@ROWCOUNT FROM ##g JOIN #t", 'sqlserver'), [
+    'ident:SELECT', 'qident:[Order ]]Id]', 'punct:,', "string:N'it''s'", 'punct:,', 'param:@d', 'punct:,', 'sysvar:@@ROWCOUNT',
+    'ident:FROM', 'ident:##g', 'ident:JOIN', 'ident:#t',
+  ]);
+  assert.equal(unquoteIdent('[Order ]]Id]'), 'Order ]Id');
+});
+
+test('SQL Server: DECLARE @vars, no semicolons, GO, TOP, #temp, APPLY, table hints', () => {
+  const src = `DECLARE @since DATE = '2024-01-01', @min INT
+SET @min = 20
+SELECT t.id, t.pokemon_id INTO #team FROM dbo.teams t WITH (NOLOCK) WHERE t.caught_on >= @since AND t.level >= @min
+GO
+WITH ranked AS (
+  SELECT TOP 10 tr.name, p.total FROM #team t
+  CROSS APPLY (SELECT TOP 1 * FROM dbo.pokemon x WHERE x.id = t.pokemon_id ORDER BY x.total DESC) p
+  OUTER APPLY dbo.moves(t.pokemon_id) m
+  INNER JOIN dbo.[Trainer List] tr ON tr.id = t.id
+  ORDER BY tr.name
+), bad AS (SELECT a FROM t ORDER BY a)
+SELECT * FROM ranked WHERE @region IS NULL`;
+  const a = analyze(src, 'sqlserver');
+  assert.deepEqual(a.statements.map((s) => s.kind), ['declare', 'set', 'other', 'other']);
+  assert.deepEqual(a.variables.map((v) => [v.names[0], v.type, v.value, v.refs.length]),
+    [['@since', 'DATE', '2024-01-01', 1], ['@min', 'INT', '20', 2]]);
+  assert.deepEqual(a.params.map((p) => p.text), ['@region']);
+  const team = a.graph.nodes.find((n) => n.label === '#team');
+  assert.equal(team.kind, 'created');
+  assert.deepEqual(team.in, ['tbl:dbo.teams']);
+  const ranked = a.graph.nodes.find((n) => n.label === 'ranked');
+  assert.equal(ranked.shape.limit, '10');
+  assert.ok(a.graph.nodes.some((n) => n.label === 'Trainer List'));
+  const joins = a.graph.edges.filter((e) => e.to === ranked.id).flatMap((e) => e.joins);
+  assert.deepEqual(joins.map((j) => j.joinType + (j.apply ? ' APPLY' : '')).sort(), ['CROSS APPLY', 'FROM', 'INNER', 'LEFT APPLY']);
+  const m = msgs(a);
+  assert.match(m, /@region is never declared/);
+  assert.match(m, /SQL Server does not allow ORDER BY in a CTE without TOP/); // bad, not ranked
+  assert.equal(a.diags.filter((d) => /ORDER BY in a/.test(d.message)).length, 1);
+  assert.doesNotMatch(m, /without ON|Variable .* never used|Unterminated/);
+});
+
+test('SQL Server formatting: TOP, INTO, hints and DECLARE lists stay readable', () => {
+  const out = formatSql(`declare @a int = 1, @b date
+select distinct top (5) x.id, x.name into #t from dbo.x x with (nolock) cross apply (select top 1 y.v from y where y.id = x.id) z
+go
+drop table #t`, 'sqlserver');
+  assert.match(out, /^DECLARE @a INT = 1,\n {8}@b DATE$/m);
+  assert.match(out, /^SELECT DISTINCT TOP \(5\)\n {2}x\.id,$/m);
+  assert.match(out, /^INTO #t$/m);
+  assert.match(out, /^FROM dbo\.x AS x WITH \(NOLOCK\)$/m);
+  assert.match(out, /^CROSS APPLY \($/m);
+  assert.match(out, /^\) AS z$/m);
+  assert.match(out, /^GO\n\nDROP TABLE #t/im);
+  assert.equal(formatSql(out, 'sqlserver'), out);
+});
+
+test('rename and CTE preview in SQL Server', () => {
+  const src = 'DECLARE @x INT = 1; WITH [My Cte] AS (SELECT @x AS n) SELECT * FROM [My Cte]';
+  const a = analyze(src, 'sqlserver');
+  const v = symbolAt(a, src.lastIndexOf('@x') + 1);
+  assert.deepEqual(renameEdits(a, v, 'total').changes.map((c) => c.insert), ['@total', '@total']);
+  const cte = symbolAt(a, src.lastIndexOf('[My Cte]') + 2);
+  assert.deepEqual(renameEdits(a, cte, 'Days').changes.map((c) => c.insert), ['[Days]', '[Days]']);
+  const pv = previewSql(a, cte.node.id, { limit: 50 });
+  assert.match(pv.sql, /^DECLARE @x INT = 1;/);
+  assert.match(pv.sql, /SELECT TOP 50 \*\nFROM \[My Cte\];/);
 });

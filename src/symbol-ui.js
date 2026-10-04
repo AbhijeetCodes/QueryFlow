@@ -128,7 +128,7 @@ export function symbolFeatures({ setFocusRanges, toast = () => {}, onPreview = (
       this.close(true);
       if (!r.changes.length) return;
       this.view.dispatch({ changes: r.changes, userEvent: 'rename' });
-      toast(`Renamed ${old} → ${r.changes[0]?.insert.replace(/^[`"]|[`"]$/g, '') ?? ''} in ${r.changes.length} place${r.changes.length === 1 ? '' : 's'} · ⌘Z to undo`);
+      toast(`Renamed ${old} → ${r.changes[0]?.insert.replace(/^[`"[]|[`"\]]$/g, '') ?? ''} in ${r.changes.length} place${r.changes.length === 1 ? '' : 's'} · ⌘Z to undo`);
     }
     close(refocus) {
       if (this.dom.hidden) return;

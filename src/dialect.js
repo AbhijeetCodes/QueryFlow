@@ -1,4 +1,4 @@
-// The SQL dialects QueryFlow reads. A dialect decides how the tokenizer reads
+// The SQL dialects QueryFlow reads (BigQuery, PostgreSQL, MySQL, SQL Server). A dialect decides how the tokenizer reads
 // quotes, comments and parameters, which lint rules apply, and how a hardcoded
 // value becomes a variable. Everything else (CTE graph, steps, rename, …) is
 // the same SQL in all of them.
@@ -71,6 +71,29 @@ export const DIALECTS = {
     paramNote: 'it is never SET in this script, so it is NULL unless the session set it',
     paramLint: (p) => `${p} is never SET in this script — it is NULL unless the session set it earlier. Turn it into a SET from the side panel.`,
   },
+  sqlserver: {
+    id: 'sqlserver',
+    name: 'SQL Server',
+    hashComments: false,
+    doubleQuote: 'ident',
+    backslashEscapes: false,
+    doubledQuotes: true,
+    multilineStrings: true,
+    stringPrefix: /([nN])?(')/y,
+    rawPrefix: null,
+    dollarStrings: false,
+    bracketIdents: true, // [Order Details]
+    hashNames: true, // #temp and ##global temp tables
+    params: '@',
+    vars: 'tsql', // DECLARE @name TYPE = value, SET @name = value
+    arrays: false,
+    reserved: words(`TOP PERCENT OFFSET FETCH APPLY PIVOT UNPIVOT OPTION CURRENT_DATE CURRENT_TIMESTAMP
+      CURRENT_USER SESSION_USER SYSTEM_USER IDENTITY`),
+    types: ['NVARCHAR(100)', 'DATE', 'DATETIME2', 'INT', 'BIGINT', 'DECIMAL(18, 2)', 'BIT'],
+    typeOf: { STRING: 'NVARCHAR(100)', INT64: 'INT', FLOAT64: 'DECIMAL(18, 2)', TIMESTAMP: 'DATETIME2', DATETIME: 'DATETIME2', BOOL: 'BIT' },
+    paramNote: 'it is never declared in this script, so it must be a parameter of the procedure or come from the caller',
+    paramLint: (p) => `${p} is never declared in this script — SQL Server needs DECLARE ${p} <type> unless it is a procedure parameter. Turn it into a DECLARE from the side panel.`,
+  },
 };
 
 export const DIALECT_IDS = Object.keys(DIALECTS);
@@ -88,12 +111,13 @@ const SIMPLE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A table path as the dialect writes it: `proj.ds.t` in BigQuery, quoted parts only where needed elsewhere. */
 export function quoteTable(full, id) {
   if (id === 'bigquery') return '`' + full + '`';
+  if (id === 'sqlserver') return full.split('.').map((p) => (SIMPLE.test(p) ? p : '[' + p.split(']').join(']]') + ']')).join('.');
   const q = id === 'mysql' ? '`' : '"';
   return full.split('.').map((p) => (SIMPLE.test(p) && (id === 'mysql' || p === p.toLowerCase()) ? p : q + p.split(q).join(q + q) + q)).join('.');
 }
 
-/** An identifier with its quotes taken off (`x`, "x"). */
-export const bareName = (s) => String(s ?? '').replace(/[`"]/g, '');
+/** An identifier with its quotes taken off (`x`, "x", [x]). */
+export const bareName = (s) => String(s ?? '').replace(/[`"[\]]/g, '');
 
 // ---- detection ------------------------------------------------------------------
 // Clues that a query was written for one dialect: [dialect, weight, label, pattern].
@@ -129,6 +153,15 @@ const CLUES = [
   ['mysql', 3, 'GROUP_CONCAT', /\bGROUP_CONCAT\s*\(/i],
   ['mysql', 3, 'LIMIT offset, count', /\bLIMIT\s+\d+\s*,\s*\d+/i],
   ['mysql', 3, 'MySQL table options', /\b(AUTO_INCREMENT|STRAIGHT_JOIN|UNSIGNED|TINYINT|MEDIUMINT)\b|\bENGINE\s*=/i],
+  ['sqlserver', 4, 'DECLARE @variables', /\bDECLARE\s+@\w+/i],
+  ['sqlserver', 3, '[bracketed] names', /\[[A-Za-z_][\w ]*\]\s*\.\s*\[?[A-Za-z_]|\b(FROM|JOIN)\s+\[[A-Za-z_][\w ]*\]/i],
+  ['sqlserver', 3, 'SELECT TOP n', /\bSELECT\s+(DISTINCT\s+)?TOP\s*\(?\s*(\d+|@\w+)/i],
+  ['sqlserver', 3, '#temp tables', /\b(INTO|FROM|JOIN|TABLE)\s+##?[A-Za-z_]/i],
+  ['sqlserver', 3, 'CROSS / OUTER APPLY', /\b(CROSS|OUTER)\s+APPLY\b/i],
+  ['sqlserver', 3, 'WITH (NOLOCK)', /\bWITH\s*\(\s*NOLOCK\s*\)/i],
+  ['sqlserver', 2, 'SQL Server functions', /\b(GETDATE|GETUTCDATE|SYSDATETIME|ISNULL|DATEADD|DATEDIFF|DATEPART|DATENAME|EOMONTH|IIF|CHARINDEX|LEN)\s*\(/i],
+  ['sqlserver', 2, 'SQL Server types', /\b(NVARCHAR|DATETIME2|UNIQUEIDENTIFIER|SMALLDATETIME|DATETIMEOFFSET|MONEY)\b/i],
+  ['sqlserver', 3, 'GO batches', /^\s*GO\s*$/im],
 ];
 
 // The text without comments, and a copy with string contents removed too.
@@ -174,8 +207,8 @@ function scrub(src) {
  */
 export function detectDialect(src) {
   const { raw, code } = scrub(String(src ?? ''));
-  const score = { bigquery: 0, postgres: 0, mysql: 0 };
-  const reasons = { bigquery: [], postgres: [], mysql: [] };
+  const score = Object.fromEntries(DIALECT_IDS.map((id) => [id, 0]));
+  const reasons = Object.fromEntries(DIALECT_IDS.map((id) => [id, []]));
   for (const [id, weight, label, re, on] of CLUES) {
     if (!re.test(on === 'raw' ? raw : code)) continue;
     score[id] += weight;

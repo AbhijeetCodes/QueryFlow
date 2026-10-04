@@ -1,4 +1,4 @@
-// Right-top panel: variables (BigQuery DECLARE, MySQL SET @var, params CTEs),
+// Right-top panel: variables (BigQuery DECLARE, MySQL SET @var, SQL Server DECLARE @var, params CTEs),
 // query parameters and hardcoded filter values.
 // Editing an input rewrites the SQL in place (one undoable transaction per
 // keystroke burst); the panel defers re-rendering while an input has focus so
@@ -108,10 +108,13 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
     return name;
   }
 
-  // How this dialect writes a variable: BigQuery DECLARE, MySQL SET @name. null: none (Postgres).
+  // How this dialect writes a variable: BigQuery DECLARE, MySQL SET @name, SQL Server
+  // DECLARE @name TYPE = value. null: none (Postgres).
   const D = () => dialectOf(analysis.dialect);
-  const varRef = (name) => (D().vars === 'set' ? '@' + name : name);
-  const varDecl = (name, type, value) => (D().vars === 'set' ? `SET @${name} = ${value};` : `DECLARE ${name} ${type} DEFAULT ${value};`);
+  const atNames = () => D().vars === 'set' || D().vars === 'tsql'; // names keep their @
+  const varRef = (name) => (atNames() ? '@' + name : name);
+  const varDecl = (name, type, value) => (D().vars === 'set' ? `SET @${name} = ${value};`
+    : D().vars === 'tsql' ? `DECLARE @${name} ${type} = ${value};` : `DECLARE ${name} ${type} DEFAULT ${value};`);
 
   function declareInsert(decl) {
     const a = analysis;
@@ -192,7 +195,7 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
 
     // Variables
     const dl = dialectOf(a.dialect);
-    const how = dl.vars === 'declare' ? 'DECLARE' : dl.vars === 'set' ? 'SET @var' : '';
+    const how = dl.vars === 'declare' ? 'DECLARE' : dl.vars === 'set' ? 'SET @var' : dl.vars === 'tsql' ? 'DECLARE @var' : '';
     parts.push(section('Variables', a.variables.length + a.cteParams.length, [how, a.cteParams.length || !how ? 'params CTE' : ''].filter(Boolean).join(' + ')));
     if (!a.variables.length && !a.cteParams.length) {
       parts.push(dl.vars
@@ -208,7 +211,7 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
             <button class="name var" data-act="jump" title="Jump to uses">${esc(v.names.join(', '))}</button>
             <span class="meta">${esc(v.type || (v.kind === 'set' ? 'user variable' : 'inferred'))} · ${plural(v.refs.length, 'use')}</span>
           </div>
-          ${v.edit ? valueInput(key, v.value, v.edit.kind, v.edit.wrap) : `<span class="meta">no ${v.kind === 'set' ? '' : 'DEFAULT '}value</span>`}
+          ${v.edit ? valueInput(key, v.value, v.edit.kind, v.edit.wrap) : `<span class="meta">no ${v.kind === 'set' || dl.vars === 'tsql' ? '' : 'DEFAULT '}value</span>`}
           ${v.owners?.length ? `<div class="ctxs"><span class="used-in">used in</span>${stepTags(v.owners, byId)}</div>` : ''}
         </div>`);
     });
@@ -231,8 +234,8 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
 
     // Parameters
     if (a.params.length) {
-      const hint = dl.id === 'postgres' ? '$1 · :name' : dl.vars === 'set' ? '@var never SET' : '@name';
-      parts.push(section(dl.vars === 'set' ? 'Unset variables' : 'Query parameters', a.params.length, hint));
+      const hint = dl.id === 'postgres' ? '$1 · :name' : dl.vars === 'set' ? '@var never SET' : dl.vars === 'tsql' ? '@var never declared' : '@name';
+      parts.push(section(dl.vars === 'set' ? 'Unset variables' : dl.vars === 'tsql' ? 'Undeclared variables' : 'Query parameters', a.params.length, hint));
       a.params.forEach((p, i) => {
         const key = 'param:' + i;
         rows.set(key, { param: p, focus: p.refs });
@@ -296,7 +299,7 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
     return `<div class="section${shut ? ' shut' : ''}" data-sec="${esc(title)}"><h3><button class="sec-toggle" data-act="toggle-sec" aria-expanded="${!shut}" title="${shut ? 'Show' : 'Hide'} this section"><span class="sec-caret" aria-hidden="true">▾</span>${esc(title)} <span class="badge">${n}</span></button></h3>${action || `<span class="hint">${esc(hint)}</span>`}</div>`;
   }
 
-  // One click: every hardcoded filter value becomes a variable (DECLARE, or SET @ in MySQL).
+  // One click: every hardcoded filter value becomes a variable (DECLARE, SET @ in MySQL, DECLARE @ in SQL Server).
   //  - IN ('a', 'b') lists of literals -> ARRAY variable, used as IN UNNEST(v) (BigQuery)
   //  - a value that equals an existing variable -> that variable is reused
   //  - everything else -> DECLARE v_<column>[_from|_to|_min|_max] TYPE DEFAULT <literal>
@@ -342,7 +345,8 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
         continue;
       }
       const typedOcc = occ.find((o) => o.typed);
-      const type = inferType(g.value, g.kind, typedOcc?.typed);
+      const bqType = inferType(g.value, g.kind, typedOcc?.typed);
+      const type = D().typeOf?.[bqType] || bqType;
       const name = unique(nameFor(occ[0].label, g.kind));
       decls.push(varDecl(name, type, typedOcc ? typedOcc.text : occ[0].text));
       for (const o of occ) changes.push({ from: o.from, to: o.to, insert: varRef(name) });
@@ -494,28 +498,30 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
       if (!box.hidden) { box.hidden = true; return; }
       const dl = D();
       const set = dl.vars === 'set';
+      const at = atNames();
       let name, type, value;
       if (row.param) {
         const n = row.param.name;
         // A MySQL @var keeps its name: the SET just gives it a value.
-        name = !set && taken(n) && analysis.tokens.filter((t) => t.t === 'ident' && t.s.toLowerCase() === n.toLowerCase()).length ? uniqueName('v_' + n) : n;
-        type = 'STRING';
+        name = !at && taken(n) && analysis.tokens.filter((t) => t.t === 'ident' && t.s.toLowerCase() === n.toLowerCase()).length ? uniqueName('v_' + n) : n;
+        type = dl.typeOf?.STRING || 'STRING';
         value = '';
       } else {
         const g = row.group;
         name = uniqueName('v_' + identFromLabel(g.labels[0]).toLowerCase());
         type = inferType(g.value, g.kind, g.occ.find((o) => o.typed)?.typed);
+        type = dl.typeOf?.[type] || type;
         value = null;
       }
-      const fixedName = set && row.param;
+      const fixedName = at && row.param;
       box.innerHTML = `
-        ${set ? '<span class="q">@</span>' : ''}<input class="p-name" value="${esc(name)}" spellcheck="false" title="Variable name"${fixedName ? ' readonly' : ''}/>
+        ${at ? '<span class="q">@</span>' : ''}<input class="p-name" value="${esc(name)}" spellcheck="false" title="Variable name"${fixedName ? ' readonly' : ''}/>
         ${dl.types.length ? `<select class="p-type" title="${esc(dl.name)} type">${dl.types.map((t) => `<option${t === type ? ' selected' : ''}>${t}</option>`).join('')}</select>` : ''}
         ${value !== null ? `<input class="p-value" placeholder="${set ? '' : 'default '}value, e.g. 'SG'" spellcheck="false" title="Value (SQL literal)"/>` : ''}
         <button class="mini accent" data-act="promote">Create</button>
         <button class="mini" data-act="promote-cancel" title="Esc">Cancel</button>
-        <p class="p-hint">${set
-          ? `Adds <code>SET @${fixedName ? esc(name) : '…'} = …;</code> at the top${row.param ? '' : ` and replaces all ${row.group.occ.length} occurrence${row.group.occ.length > 1 ? 's' : ''}`}.`
+        <p class="p-hint">${at
+          ? `Adds <code>${set ? 'SET' : 'DECLARE'} @${fixedName ? esc(name) : '…'}${set ? '' : ' TYPE'} = …;</code> at the top${row.param ? '' : ` and replaces all ${row.group.occ.length} occurrence${row.group.occ.length > 1 ? 's' : ''}`}.`
           : `Adds <code>DECLARE</code> at the top and replaces ${row.param ? `every ${esc(row.param.text)}` : `all ${row.group.occ.length} occurrence${row.group.occ.length > 1 ? 's' : ''}`}. Match the column's type: BigQuery will not convert a STRING variable to DATE.`}</p>`;
       box.hidden = false;
       box.querySelector(row.param ? '.p-value' : '.p-name').focus();
@@ -526,19 +532,22 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
       const name = box.querySelector('.p-name').value.trim().replace(/^@/, '');
       const type = box.querySelector('.p-type')?.value || '';
       const set = D().vars === 'set';
+      const at = atNames();
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) { toast('Variable names use letters, digits and _ only', 'error'); return; }
       if (analysis.variables.some((v) => v.names.some((n) => n.toLowerCase() === varRef(name).toLowerCase()))) { toast(`"${varRef(name)}" is already ${set ? 'set' : 'declared'}`, 'error'); return; }
-      if (set && !row.param && analysis.params.some((p) => p.text.toLowerCase() === varRef(name).toLowerCase())) { toast(`${varRef(name)} is already used in the query`, 'error'); return; }
+      if (at && !row.param && analysis.params.some((p) => p.text.toLowerCase() === varRef(name).toLowerCase())) { toast(`${varRef(name)} is already used in the query`, 'error'); return; }
       let def, replaced;
       const changes = [];
       if (row.param) {
         let raw = box.querySelector('.p-value').value.trim();
         if (!raw) { toast('Give the variable a default value', 'error'); return; }
-        const quote = set ? !/^-?\d+(\.\d+)?$/.test(raw) && !/^(TRUE|FALSE|NULL)$/i.test(raw) : ['STRING', 'DATE', 'DATETIME', 'TIMESTAMP'].includes(type);
-        if (quote && !/^['"]/.test(raw) && !/^[A-Z_]+\s*[('"]/i.test(raw)) raw = `'${raw.replace(/'/g, "\\'")}'`;
+        const quote = at ? !/^-?\d+(\.\d+)?$/.test(raw) && !/^(TRUE|FALSE|NULL)$/i.test(raw) : ['STRING', 'DATE', 'DATETIME', 'TIMESTAMP'].includes(type);
+        // already SQL: a quoted string, a call like NOW(), or a typed literal like DATE '2024-01-01' / N'x'
+        const isSql = /^['"]/.test(raw) || /^[A-Z_]+\s*\(/i.test(raw) || /^(DATE|DATETIME|TIMESTAMP|TIME|INTERVAL|NUMERIC|JSON|[NEBRX])\s*'.*'$/i.test(raw);
+        if (quote && !isSql) raw = `'${D().backslashEscapes ? raw.replace(/'/g, "\\'") : raw.replace(/'/g, "''")}'`;
         def = raw;
-        if (!set) for (const r of row.param.refs) changes.push({ from: r.from, to: r.to, insert: name });
-        replaced = set ? 0 : row.param.refs.length;
+        if (!at) for (const r of row.param.refs) changes.push({ from: r.from, to: r.to, insert: name });
+        replaced = at ? 0 : row.param.refs.length;
       } else {
         const g = row.group;
         const typedOcc = g.occ.find((o) => o.typed);
@@ -549,7 +558,7 @@ export function createVarsPanel(root, { view, toast, onPickStep }) {
       changes.push(declareInsert(varDecl(name, type, def)));
       document.activeElement?.blur();
       view.dispatch({ changes, userEvent: 'input.lens' });
-      toast(replaced ? `Created ${varRef(name)} and replaced ${plural(replaced, 'occurrence')}` : `Set ${varRef(name)} at the top of the script`);
+      toast(replaced ? `Created ${varRef(name)} and replaced ${plural(replaced, 'occurrence')}` : `${set ? 'Set' : 'Declared'} ${varRef(name)} at the top of the script`);
     }
   });
 

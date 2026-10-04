@@ -1,9 +1,9 @@
-// Tolerant SQL tokenizer for BigQuery (GoogleSQL), PostgreSQL and MySQL. Never
+// Tolerant SQL tokenizer for BigQuery (GoogleSQL), PostgreSQL, MySQL and SQL Server. Never
 // throws: malformed input produces tokens flagged with `err` so the linter can
 // point at them.
 //
 // Token: { t: type, s: text, a: from, b: to, u?: UPPER (words), err?: msg }
-// Types: ws, comment, string, number, ident, qident (`quoted` / "quoted"),
+// Types: ws, comment, string, number, ident (#temp too), qident (`quoted` / "quoted" / [quoted]),
 //        param (@x, $1, :x — with `name` and `sigil`), sysvar (@@x), op, punct
 
 import { dialectOf } from './dialect.js';
@@ -99,7 +99,7 @@ export function tokenize(src, dialect) {
       }
     }
 
-    // strings, with the dialect's prefixes (r'' b'' in BigQuery, E'' in Postgres, N'' in MySQL)
+    // strings, with the dialect's prefixes (r'' b'' in BigQuery, E'' in Postgres, N'' in MySQL / SQL Server)
     if (c === "'" || (c === '"' && D.doubleQuote === 'string') || /[A-Za-z]/.test(c)) {
       const m = stickyMatch(D.stringPrefix, src, i);
       if (m && (!m[1] || D.id !== 'bigquery' || /^(r|b|rb|br)$/i.test(m[1]))) {
@@ -118,7 +118,24 @@ export function tokenize(src, dialect) {
       }
     }
 
-    // quoted identifiers: `x` (all), "x" (Postgres)
+    // SQL Server: [quoted name] (]] stands for one ])
+    if (c === '[' && D.bracketIdents) {
+      const [j, closed] = scanQuoted(i + 1, ']', { backslash: false, doubled: true, multiline: false });
+      push('qident', start, j, closed ? undefined : { err: 'Unterminated [identifier]' });
+      i = j;
+      continue;
+    }
+
+    // SQL Server temp tables: #name, ##name
+    if (c === '#' && D.hashNames && /[#A-Za-z_]/.test(src[i + 1] || '')) {
+      i += src[i + 1] === '#' ? 2 : 1;
+      const m = stickyMatch(word, src, i);
+      if (m) i += m[0].length;
+      push('ident', start, i, { u: src.slice(start, i).toUpperCase() });
+      continue;
+    }
+
+    // quoted identifiers: `x` (all), "x" (Postgres, SQL Server)
     if (c === '`' || (c === '"' && D.doubleQuote === 'ident')) {
       const [j, closed] = scanQuoted(i + 1, c, { backslash: D.id === 'bigquery', doubled: D.id !== 'bigquery', multiline: false });
       push('qident', start, j, closed ? undefined : { err: `Unterminated ${c}identifier${c}` });
@@ -226,10 +243,10 @@ export function stringInner(tok) {
   return { from, to: Math.max(from, to) };
 }
 
-// `x` or "x" -> x (a doubled quote inside stands for one).
+// `x`, "x" or [x] -> x (a doubled closing quote inside stands for one).
 export function unquoteIdent(s) {
-  const q = s[0];
-  if (q !== '`' && q !== '"') return s;
+  const q = s[0] === '[' ? ']' : s[0];
+  if (q !== '`' && q !== '"' && q !== ']') return s;
   const inner = s.slice(1, s.length > 1 && s.endsWith(q) ? -1 : undefined);
   return inner.split(q + q).join(q);
 }

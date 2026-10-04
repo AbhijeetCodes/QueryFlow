@@ -13,7 +13,7 @@ const small = globalThis.matchMedia?.('(max-width: 820px)').matches;
 const FEATURES = [
   ['Query a CSV or Excel file', 'drop it anywhere on the page and run SQL on it. It never leaves your browser.',
     'open it from the empty editor and run SQL on it. It never leaves your browser.'],
-  ['Format and lint', `${MOD}⇧F tidies the query; warnings catch joins that change the numbers.`,
+  ['Format and lint', `${MOD}⇧F tidies the query (pick commas, case and indent in the ⋯ menu); warnings catch joins that change the numbers.`,
     'the Format button tidies the query; warnings catch joins that change the numbers.'],
   ['Graph and Steps', 'how the tables and CTEs feed each other.'],
   ['Values in one place', 'edit variables, filter values and date windows on the right.',
@@ -35,7 +35,7 @@ export function showWelcome() {
         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
     </div>
-    <p class="welcome-sub">A SQL editor for BigQuery, PostgreSQL and MySQL that runs in your browser.</p>
+    <p class="welcome-sub">A SQL editor for BigQuery, PostgreSQL, MySQL and SQL Server that runs in your browser.</p>
     ${small ? '<p class="welcome-note"><b>Best viewed on a desktop.</b> On a phone you can still read, check and run queries: switch between them with the bar at the bottom.</p>' : ''}
     <ul class="welcome-list">
       ${lines.map(([b, t]) => `<li><b>${b}:</b> ${t}</li>`).join('')}

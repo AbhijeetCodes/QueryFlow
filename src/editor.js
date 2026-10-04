@@ -7,7 +7,7 @@ import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } 
 import { HighlightStyle, syntaxHighlighting, bracketMatching, indentOnInput, foldGutter, foldKeymap,
   foldService, codeFolding } from '@codemirror/language';
 import { linter, lintGutter, lintKeymap } from '@codemirror/lint';
-import { sql, SQLDialect, PostgreSQL, MySQL, keywordCompletionSource } from '@codemirror/lang-sql';
+import { sql, SQLDialect, PostgreSQL, MySQL, MSSQL, keywordCompletionSource } from '@codemirror/lang-sql';
 import { tags as t } from '@lezer/highlight';
 import { analyzeDoc } from './analyzer.js';
 import { currentDialect, setCurrentDialect, quoteTable } from './dialect.js';
@@ -56,7 +56,7 @@ export const bigQueryDialect = SQLDialect.define({
   caseInsensitiveIdentifiers: true,
 });
 
-const LANG = { bigquery: bigQueryDialect, postgres: PostgreSQL, mysql: MySQL };
+const LANG = { bigquery: bigQueryDialect, postgres: PostgreSQL, mysql: MySQL, sqlserver: MSSQL };
 
 // Highlighting and keyword completion follow the dialect picker.
 const langSlot = new Compartment();

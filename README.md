@@ -2,7 +2,7 @@
 
 # <img src="public/logo.svg" width="32" height="32" alt="" align="top"> QueryFlow
 
-**A fast, private SQL editor for reading and editing big BigQuery, PostgreSQL and MySQL queries, right in your browser.**
+**A fast, private SQL editor for reading and editing big BigQuery, PostgreSQL, MySQL and SQL Server queries, right in your browser.**
 
 Free · no login · no server · your SQL never leaves your browser
 
@@ -157,6 +157,11 @@ Open **[abhijeetcodes.github.io/QueryFlow](https://abhijeetcodes.github.io/Query
 ### Copy, share and save
 
 - **Paste a whole query** and it is auto-formatted (⌘Z shows the original). Turn this off with "Format on paste" in the ⋯ menu.
+- **Formatting options** (the ⋯ menu's *Formatting* group; click an item to change it, and the query is re-formatted as one undo step):
+  - *Keywords*: UPPER CASE, lower case or as typed.
+  - *Commas*: at the end of the line, or at the start of the next one (`, b`), including between CTEs (`, b AS (`), so the last column can be deleted without touching the line above.
+  - *Indent*: 2 spaces, 4 spaces or a tab.
+  - *Short lists*: short `GROUP BY` lists and `WHERE` conditions on one line, or always one item per line.
 - **Review before copy**: QueryFlow remembers the pasted query (after formatting) as the original. If you've changed it since, **Copy** (the copy icon, or ⌘⇧Enter) first shows a diff: removed and added lines, with the changed part of each line highlighted and unchanged stretches folded. Enter copies the edited SQL; you can also *Copy original* or *Mark current as original*. The **Changes +N −N** button opens the same view at any time. Untick "Always review before copying" to copy straight away.
 - **Copy preview of a CTE** (⌘⌥Enter, the hover card, the graph's node card or the ⋯ menu): copies `WITH <the CTEs it needs> SELECT * FROM it LIMIT 100`, with the script's DECLAREs and temp functions in front, ready to run in BigQuery. It's the quickest way to check one step of a long query. A CTE nested inside another is lifted out too. (LIMIT doesn't lower the bytes BigQuery bills.)
 - **Share link** (the link icon): copies a URL with the query compressed into its `#hash`. Browsers don't send the hash to the server, so the query isn't uploaded anywhere, not even to the host. Opening the link loads the query; ⌘Z brings back what you had. Very long queries make long links that some chat apps cut; save a `.sql` file for those.
@@ -201,9 +206,9 @@ puts them back.
 ### Variables and filter values
 
 - **Edit a value on the right** and every occurrence in the SQL changes as you type.
-- **→ Variable** on a hardcoded value or parameter adds `DECLARE v_x TYPE DEFAULT …;` (MySQL: `SET @v_x = …;`) at the top and replaces every occurrence. PostgreSQL has no script variables, so there it isn't offered.
+- **→ Variable** on a hardcoded value or parameter adds `DECLARE v_x TYPE DEFAULT …;` (MySQL: `SET @v_x = …;`, SQL Server: `DECLARE @v_x TYPE = …;`) at the top and replaces every occurrence. PostgreSQL has no script variables, so there it isn't offered.
 - **use start_date** appears when a hardcoded value equals an existing variable's value.
-- **→ all to variables**: one click turns every hardcoded filter value into a `DECLARE` (MySQL: `SET @…`). In BigQuery an all-literal `IN (…)` list becomes an ARRAY variable used as `IN UNNEST(v)`, and a value equal to an existing variable reuses it. One ⌘Z undoes it.
+- **→ all to variables**: one click turns every hardcoded filter value into a `DECLARE` (MySQL: `SET @…`, SQL Server: `DECLARE @…`). In BigQuery an all-literal `IN (…)` list becomes an ARRAY variable used as `IN UNNEST(v)`, and a value equal to an existing variable reuses it. One ⌘Z undoes it.
 - **Params CTEs**: a CTE with no FROM, like `params AS (SELECT DATE '2025-01-01' AS start_date, 'SG' AS country)`, is treated as a set of constants. Its values are editable in the Variables panel, with the comment next to each value shown as a hint. Its cross-join edges are hidden, each step that reads it gets a `uses params` chip, and cross-joining it doesn't trigger the comma-join warning, since it's a single row.
 - **Hover** a row to highlight its uses. **Click** a name or the `×N` count to jump through them.
 
@@ -224,7 +229,7 @@ puts them back.
 - **Joins that change the numbers**: two warnings for silent wrong answers.
   - *An outer join undone later*: a `WHERE` condition on a LEFT JOIN's columns (`WHERE b.status = 'x'`), or a later INNER JOIN on them, is false for the rows the LEFT JOIN kept with NULLs, so it drops them and the LEFT JOIN works as an INNER JOIN. Conditions that handle NULL (`IS NULL`, `OR`, `COALESCE`, `IFNULL`, `IF`, `CASE`) aren't flagged. RIGHT and FULL joins are checked the same way.
   - *Fan-out added up*: a CTE with one row per `(user_id, day)` (its GROUP BY, or a `QUALIFY ROW_NUMBER() … = 1` dedupe) joined on `user_id` alone matches each row several times. That's normal for a one-to-many join, so it's only flagged when a `SUM`, `AVG`, `COUNT` or `COUNTIF` in that step adds up columns of the repeated side. `COUNT(DISTINCT …)`, `MIN` and `MAX` are safe.
-- **Other lint**: `= NULL` (never true), `NOT IN (subquery)` with possible NULLs, `LAST_VALUE` with ORDER BY and the default frame (returns the current row), a JOIN without ON, comma joins, `ORDER BY` in a CTE without LIMIT, unused CTEs and variables, CTEs or aliases defined twice and unbalanced parentheses. In BigQuery also `SELECT *` (bills every column), a column named like a variable (the column wins), DECLARE after other statements, `UNION` without ALL / DISTINCT and legacy `[project:dataset.table]` references. ⌘⇧M lists them all.
+- **Other lint**: `= NULL` (never true), `NOT IN (subquery)` with possible NULLs, `LAST_VALUE` with ORDER BY and the default frame (returns the current row), a JOIN without ON, comma joins, `ORDER BY` in a CTE without LIMIT (an error in SQL Server unless TOP or OFFSET is given), unused CTEs and variables, CTEs or aliases defined twice and unbalanced parentheses. In BigQuery also `SELECT *` (bills every column), a column named like a variable (the column wins), DECLARE after other statements, `UNION` without ALL / DISTINCT and legacy `[project:dataset.table]` references. ⌘⇧M lists them all.
 
 ### Look and feel
 
@@ -233,23 +238,23 @@ puts them back.
 
 ## Dialects
 
-Pick **BigQuery**, **PostgreSQL** or **MySQL** next to the logo. The choice is remembered and
+Pick **BigQuery**, **PostgreSQL**, **MySQL** or **SQL Server** next to the logo. The choice is remembered and
 travels with share links. It decides how the text is read (quotes, comments, parameters),
-highlighted, formatted and checked; the graph, steps, rename and previews work the same in all three.
+highlighted, formatted and checked; the graph, steps, rename and previews work the same in all four.
 
-| | BigQuery | PostgreSQL | MySQL |
-|---|---|---|---|
-| Quoted names | `` `proj.ds.t` `` | `"Name"` | `` `name` `` |
-| Variables | `DECLARE x TYPE DEFAULT …` | none in plain SQL: a params CTE plays that role | `SET @x = …` |
-| Parameters | `@name` | `$1`, `:name` | `@x` that no `SET` defines |
-| Also understood | `QUALIFY`, `UNNEST`, `FOR SYSTEM_TIME AS OF` | `::` casts, `$$` strings, `DISTINCT ON` (a dedupe), `LATERAL`, `CURRENT_DATE - INTERVAL '7 days'` | `#` comments, `:=`, `DATE_SUB(CURDATE(), INTERVAL 7 DAY)`, `CREATE TABLE t SELECT …` |
-| BigQuery-only lint | `UNION` needs ALL / DISTINCT, DECLARE first, `SELECT *` billing, legacy `[p:d.t]`, variable shadowed by a column | – | – |
+| | BigQuery | PostgreSQL | MySQL | SQL Server |
+|---|---|---|---|---|
+| Quoted names | `` `proj.ds.t` `` | `"Name"` | `` `name` `` | `[Name]`, `"Name"` |
+| Variables | `DECLARE x TYPE DEFAULT …` | none in plain SQL: a params CTE plays that role | `SET @x = …` | `DECLARE @x TYPE = …` (or a later `SET @x = …`) |
+| Parameters | `@name` | `$1`, `:name` | `@x` that no `SET` defines | `@x` that no `DECLARE` defines (a procedure parameter) |
+| Also understood | `QUALIFY`, `UNNEST`, `FOR SYSTEM_TIME AS OF` | `::` casts, `$$` strings, `DISTINCT ON` (a dedupe), `LATERAL`, `CURRENT_DATE - INTERVAL '7 days'` | `#` comments, `:=`, `DATE_SUB(CURDATE(), INTERVAL 7 DAY)`, `CREATE TABLE t SELECT …` | `TOP n`, `#temp` tables, `SELECT … INTO #t`, `CROSS` / `OUTER APPLY`, `WITH (NOLOCK)`, `GO`, statements without `;` |
+| Dialect-only lint | `UNION` needs ALL / DISTINCT, DECLARE first, `SELECT *` billing, legacy `[p:d.t]`, variable shadowed by a column | – | – | `ORDER BY` in a CTE or subquery without TOP / OFFSET |
 
 Switching dialect re-reads the same text; an untouched example query is swapped for that dialect's example.
 
 **Detect dialect on paste** (on by default, in the ⋯ menu): pasting or opening a whole query that
 clearly belongs to another dialect switches to it, and the toast says why (`:: casts`,
-`` `project.dataset` `` paths, `SET @variables`, `LIMIT 10, 20`, …). Clues inside comments and strings
+`` `project.dataset` `` paths, `SET @variables`, `LIMIT 10, 20`, `DECLARE @x`, `SELECT TOP 10`, …). Clues inside comments and strings
 don't count, and SQL that runs anywhere, or has clues for two dialects, leaves the choice alone.
 
 ## Layout
@@ -322,15 +327,15 @@ For contributors: a map of the source.
 
 | File | Role |
 |---|---|
-| `src/dialect.js` | BigQuery / PostgreSQL / MySQL: quoting, comments, parameters, variables, dialect-only lint |
-| `src/tokenizer.js` | Tolerant SQL tokenizer for the three dialects; never throws |
+| `src/dialect.js` | BigQuery / PostgreSQL / MySQL / SQL Server: quoting, comments, parameters, variables, dialect-only lint |
+| `src/tokenizer.js` | Tolerant SQL tokenizer for the four dialects; never throws |
 | `src/analyzer.js` | Heuristic analysis: CTEs, joins, variables, filter values, date windows, lint |
 | `src/shape.js` | What each step does (filters, aggregation, dedupe, windows) |
 | `src/scope.js` | Which table or CTE an alias means at a position; CTE columns for autocomplete |
 | `src/symbols.js` | The name at a position, its definition and uses; rename edits; CTE preview SQL |
 | `src/symbol-ui.js` | Hover card, go to definition, find uses, rename box |
 | `src/share.js` | Share links: deflate + base64url in the `#hash` |
-| `src/format.js` | sqlfluff-style formatting on top of `sql-formatter` (loaded on first use) |
+| `src/format.js` | sqlfluff-style formatting on top of `sql-formatter`, with the ⋯ menu's options (loaded on first use) |
 | `src/editor.js` | CodeMirror setup: dialect, marks, lint, folding, completions |
 | `src/vars-panel.js` | Variables, parameters, filter values and date windows panel |
 | `src/graph-panel.js`, `src/graph-layout*.js` | Lineage graph (dagre; big graphs lay out in a Web Worker) and Tables list |

@@ -38,3 +38,25 @@ test('format: long WHERE stays one condition per line', () => {
   const out = formatSql(`select a from t where a.some_long_column_name = 1 and b.another_long_column_name = 2 and c.third_column = 3`);
   assert.match(out, /^WHERE\n {2}a\.some_long_column_name = 1\n {2}AND b\./m);
 });
+
+test('format options: leading commas, keyword case, indent, expanded lists', () => {
+  const lead = formatSql(SQL, 'bigquery', { commas: 'leading' });
+  assert.match(lead, /^\)\n\n, b AS \($/m);
+  assert.match(lead, /^ {4}u\.id\n {4}, COUNT\(\*\) AS n$/m);
+  assert.doesNotMatch(lead, /,$/m);
+  assert.equal(formatSql(lead, 'bigquery', { commas: 'leading' }), lead);
+  const commented = formatSql('select a, -- note\n b from t', 'bigquery', { commas: 'leading' });
+  assert.match(commented, /^ {2}a -- note\n {2}, b$/m);
+
+  const lower = formatSql(SQL, 'bigquery', { keywordCase: 'lower', indent: '4' });
+  assert.match(lower, /^with a as \($/m);
+  assert.match(lower, /^ {8}u\.id,\n {8}count\(\*\) as n$/m);
+  assert.match(lower, /^inner join b on b\.id = a\.id$/m);
+
+  const tab = formatSql(SQL, 'bigquery', { indent: 'tab', compact: false });
+  assert.match(tab, /^\twhere\n\t\tu\.x = 1$/im);
+  assert.match(tab, /^\tGROUP BY\n\t\t1$/m);
+
+  const typed = formatSql('select x n from t', 'bigquery', { keywordCase: 'preserve' });
+  assert.equal(typed, 'select x as n\nfrom t\n');
+});

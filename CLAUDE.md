@@ -1,6 +1,6 @@
 # QueryFlow
 
-A lightweight SQL **editor** for BigQuery, PostgreSQL and MySQL that runs entirely in the browser and is meant to be
+A lightweight SQL **editor** for BigQuery, PostgreSQL, MySQL and SQL Server that runs entirely in the browser and is meant to be
 hosted for free as a static site. See README.md for features, layout and hosting options.
 
 ## Ground rules
@@ -33,7 +33,7 @@ npm run build    # static site in dist/ (relative paths via base: './')
 
 ## Code map
 
-- `src/dialect.js`: the three dialects (`bigquery`, `postgres`, `mysql`) and the editor's current
+- `src/dialect.js`: the four dialects (`bigquery`, `postgres`, `mysql`, `sqlserver`) and the editor's current
   one. Dialect differences belong here as data (quoting, params, variables, reserved words, lint
   text) rather than as `if (dialect)` scattered through the code.
 - `src/tokenizer.js`: tolerant tokenizer, `tokenize(src, dialect)` (never throws)
@@ -45,7 +45,8 @@ npm run build    # static site in dist/ (relative paths via base: './')
 - `src/symbols.js`: `symbolAt(analysis, pos)` (CTE / table / alias / variable / param and its uses),
   rename edits, CTE preview SQL. `src/symbol-ui.js` puts it in the editor (hover, F12, ⇧F12, F2).
 - `src/share.js`: share links (query deflated into the URL `#hash`, never sent to the host)
-- `src/format.js`: sqlfluff-style formatting on top of `sql-formatter`
+- `src/format.js`: sqlfluff-style formatting on top of `sql-formatter`; `formatSql(src, dialect, options)`
+  takes the ⋯ menu's Formatting choices (keyword case, indent, leading commas, compact lists)
 - `src/editor.js`: CodeMirror 6 setup (dialect, marks, lint, folding, completions, sticky CTE header)
 - `src/vars-panel.js`, `src/graph-panel.js`, `src/steps-view.js`: right-hand panels
 - `src/diff.js`, `src/diff-view.js`: review-before-copy diff

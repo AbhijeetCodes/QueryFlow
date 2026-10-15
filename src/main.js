@@ -40,7 +40,7 @@ async function formatSql(src, dialect = currentDialect()) {
   return (await loadFormat()).formatSql(src, dialect, formatOptions);
 }
 
-// Formatting options (the ⋯ menu's Formatting group): each item cycles through its values.
+// Formatting options (folded under one row in the ⋯ menu): each item cycles through its values.
 const FORMAT_CHOICES = {
   keywordCase: { label: 'Keywords', values: { upper: 'UPPER CASE', lower: 'lower case', preserve: 'As typed' } },
   commas: { label: 'Commas', values: { trailing: 'End of line', leading: 'Start of line' } },
@@ -486,6 +486,7 @@ document.querySelector('.actions').addEventListener('click', async (e) => {
     fopItem.setAttribute('aria-checked', String(formatOnPaste));
     return;
   }
+  if (act === 'format-options') { showFormatOptions(fmtSub.hidden); return; }
   if (act === 'format-option') {
     const k = e.target.closest('[data-opt]').dataset.opt;
     const vals = Object.keys(FORMAT_CHOICES[k].values);
@@ -725,15 +726,24 @@ themeMenu.innerHTML =
   '<div class="tm-sep"></div>' + actItem('sample', 'Load the example (Pokédex)') + actItem('clear', 'Clear editor') +
   `<div class="tm-sep"></div><button class="tm-item tm-act" role="menuitemcheckbox" data-act="format-on-paste"><span class="tm-text"><b>Format on paste</b></span><span class="tm-check">✓</span></button>` +
   `<button class="tm-item tm-act" role="menuitemcheckbox" data-act="detect-dialect"><span class="tm-text"><b>Detect dialect on paste</b></span><span class="tm-check">✓</span></button>` +
-  '<div class="tm-sep"></div><div class="tm-group">Formatting</div>' +
-  Object.entries(FORMAT_CHOICES).map(([k, c]) => `<button class="tm-item tm-act" role="menuitem" data-act="format-option" data-opt="${k}" title="Click to change">
-    <span class="tm-text"><b>${c.label}</b><small></small></span></button>`).join('') +
+  // Formatting options fold away under one row, one line each when open.
+  `<button class="tm-item tm-act" role="menuitem" data-act="format-options" aria-expanded="false"><span class="tm-text"><b>Formatting options</b></span><span class="tm-caret">›</span></button>` +
+  '<div class="tm-sub" hidden>' +
+  Object.entries(FORMAT_CHOICES).map(([k, c]) => `<button class="tm-item tm-act tm-opt" role="menuitem" data-act="format-option" data-opt="${k}" title="Click to change">
+    <span class="tm-text"><b>${c.label}</b></span><small></small></button>`).join('') + '</div>' +
   '<div class="tm-sep"></div><div class="tm-group">Theme</div>' +
   menuItem('system', 'Match system', 'Paper or Midnight', '<span class="tsw system"></span>') +
   THEMES.map((t) => menuItem(t.id, t.name, `${t.kind} · ${t.note}`, swatch(t.id))).join('');
 
+const fmtToggle = themeMenu.querySelector('[data-act="format-options"]');
+const fmtSub = themeMenu.querySelector('.tm-sub');
+function showFormatOptions(open) {
+  fmtSub.hidden = !open;
+  fmtToggle.setAttribute('aria-expanded', String(open));
+}
 function toggleThemeMenu(open = themeMenu.hidden) {
   themeMenu.hidden = !open;
+  if (open) showFormatOptions(false);
   themeBtn.setAttribute('aria-expanded', String(open));
   if (open) themeMenu.querySelector('.tm-item').focus();
 }
@@ -746,7 +756,7 @@ themeMenu.addEventListener('click', (e) => {
   themeBtn.focus();
 });
 themeMenu.addEventListener('keydown', (e) => {
-  const items = [...themeMenu.querySelectorAll('.tm-item')];
+  const items = [...themeMenu.querySelectorAll('.tm-item')].filter((el) => !el.closest('[hidden]'));
   const i = items.indexOf(document.activeElement);
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();

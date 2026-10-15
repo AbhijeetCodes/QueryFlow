@@ -158,7 +158,7 @@ Open **[abhijeetcodes.github.io/QueryFlow](https://abhijeetcodes.github.io/Query
 ### Copy, share and save
 
 - **Paste a whole query** and it is auto-formatted (⌘Z shows the original). Turn this off with "Format on paste" in the ⋯ menu.
-- **Formatting options** (the ⋯ menu's *Formatting* group; click an item to change it, and the query is re-formatted as one undo step):
+- **Formatting options** (*Formatting options* in the ⋯ menu opens them; click one to change it, and the query is re-formatted as one undo step):
   - *Keywords*: UPPER CASE, lower case or as typed.
   - *Commas*: at the end of the line, or at the start of the next one (`, b`), including between CTEs (`, b AS (`), so the last column can be deleted without touching the line above.
   - *Indent*: 2 spaces, 4 spaces or a tab.

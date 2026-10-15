@@ -50,7 +50,7 @@ npm run build    # static site in dist/ (relative paths via base: './')
   rename edits, CTE preview SQL. `src/symbol-ui.js` puts it in the editor (hover, F12, ⇧F12, F2).
 - `src/share.js`: share links (query deflated into the URL `#hash`, never sent to the host)
 - `src/format.js`: sqlfluff-style formatting on top of `sql-formatter`; `formatSql(src, dialect, options)`
-  takes the ⋯ menu's Formatting choices (keyword case, indent, leading commas, compact lists)
+  takes the ⋯ menu's Formatting options (keyword case, indent, leading commas, compact lists, joins)
 - `src/editor.js`: CodeMirror 6 setup (dialect, marks, lint, folding, completions, sticky CTE header)
 - `src/vars-panel.js`, `src/graph-panel.js`, `src/steps-view.js`: right-hand panels
 - `src/diff.js`, `src/diff-view.js`: review-before-copy diff

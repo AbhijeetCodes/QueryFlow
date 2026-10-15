@@ -23,7 +23,7 @@ function tsqlColumnsSafe() {
   return { ...transactsql, tokenizerOptions: { ...t, reservedClauses: t.reservedClauses.filter((c) => c.includes(' ') || keep.has(c)) } };
 }
 
-// The choices in the ⋯ menu's Formatting group (issue #1, after Poor SQL's options).
+// The choices under the ⋯ menu's Formatting options (issue #1, after Poor SQL's options).
 export const FORMAT_DEFAULTS = {
   keywordCase: 'upper', // 'upper' | 'lower' | 'preserve'
   indent: '2', // '2' | '4' | 'tab'

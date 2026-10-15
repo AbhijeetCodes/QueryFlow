@@ -46,6 +46,7 @@ const FORMAT_CHOICES = {
   commas: { label: 'Commas', values: { trailing: 'End of line', leading: 'Start of line' } },
   indent: { label: 'Indent', values: { 2: '2 spaces', 4: '4 spaces', tab: 'Tab' } },
   compact: { label: 'Short lists', values: { true: 'On one line', false: 'One item per line' } },
+  joins: { label: 'Joins', values: { flush: 'Level with FROM', indented: 'Indented under FROM' } },
 };
 const formatOptions = (() => {
   let saved = {};

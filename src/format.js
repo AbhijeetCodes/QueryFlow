@@ -29,6 +29,7 @@ export const FORMAT_DEFAULTS = {
   indent: '2', // '2' | '4' | 'tab'
   commas: 'trailing', // 'trailing' | 'leading' (`, b` at the start of the line, CTEs too)
   compact: true, // short lists and conditions on one line
+  joins: 'flush', // 'flush' (level with FROM) | 'indented' (one step in, sqlfluff's indented_joins)
 };
 
 export function formatSql(src, dialect = 'bigquery', options = {}) {
@@ -60,6 +61,7 @@ export function formatSql(src, dialect = 'bigquery', options = {}) {
   if (dialect === 'sqlserver') out = tsqlLayout(out);
   out = hoistClauseBodies(out, tok, hash);
   if (o.compact) out = collapseShortConditions(out, hash);
+  out = joinLayout(out, tok, o.joins === 'indented', hash);
   out = restoreTrailingComments(out, trailing, tok);
   // `SET\n  @x = 1;` and `LIMIT\n  10` on one line
   out = out.replace(/^(SET)\n {2}([^\n]*;|@[^\n]*)$/gim, '$1 $2');
@@ -412,6 +414,61 @@ function hoistClauseBodies(text, tokenize, hash = true) {
     for (let k = i + 1; k < j - 1; k++) if (frozen.has(k + 1)) { frozen.delete(k + 1); frozen.add(k); }
   }
   return lines.flatMap((l, k) => (blankAfter.has(k) ? [l, ''] : [l])).join('\n');
+}
+
+// A join's extra ON conditions go one step in (sqlfluff's indented_on_contents),
+// and with `indentJoins` the joins go one step in under FROM (its indented_joins):
+//     FROM a                         FROM a
+//     LEFT JOIN b ON b.id = a.id       LEFT JOIN b ON b.id = a.id
+//     AND b.k = 1              ->          AND b.k = 1
+//     WHERE …                        WHERE …
+const JOIN_LINE = /^(?:(?:NATURAL|INNER|LEFT|RIGHT|FULL|CROSS|OUTER|SEMI|ANTI|ASOF|POSITIONAL)\s+)*(?:JOIN|APPLY)\b|^STRAIGHT_JOIN\b/i;
+function joinLayout(text, tokenize, indentJoins, hash = true) {
+  const lines = text.split('\n');
+  const frozen = frozenLines(text, tokenize);
+  // Paren depth at the start of each line, and the depths of the ON keywords on it.
+  const depthAt = new Array(lines.length).fill(0);
+  const onAt = lines.map(() => []);
+  let line = 0;
+  let pos = 0;
+  let depth = 0;
+  for (const t of tokenize(text)) {
+    for (; pos < t.a; pos++) if (text[pos] === '\n') depthAt[++line] = depth;
+    if (t.t === 'punct' && (t.s === '(' || t.s === '[')) depth++;
+    else if (t.t === 'punct' && (t.s === ')' || t.s === ']')) depth = Math.max(0, depth - 1);
+    else if (t.u === 'ON') onAt[line].push(depth);
+    for (; pos < t.b; pos++) if (text[pos] === '\n') depthAt[++line] = depth;
+  }
+  const comment = hash ? /^\s*(--|#|\/\*)/ : /^\s*(--|\/\*)/;
+  const shift = new Array(lines.length).fill(0);
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s*)FROM(\s+\S)?/i.exec(lines[i]);
+    if (!m) continue;
+    // `FROM t AS x` (hoisted) has its joins level with it; a bare `FROM` has its items below.
+    const hoisted = Boolean(m[2]);
+    const ind = m[1].length + (hoisted ? 0 : 2);
+    const base = depthAt[i];
+    let join = false; // in a join (vs. the first FROM item)
+    let onSeen = false; // past the join's ON keyword
+    let pending = []; // comment lines that take the shift of the line after them
+    for (let j = i + 1; j < lines.length && lines[j].trim(); j++) {
+      const l = lines[j];
+      const n = indentOf(l);
+      let s;
+      if (depthAt[j] > base || (n > ind && !comment.test(l))) s = 'inside';
+      else if (n !== ind) break;
+      else if (comment.test(l)) { pending.push(j); continue; }
+      else if (JOIN_LINE.test(l.trim())) { join = true; onSeen = false; s = 'join'; }
+      else if (join && onSeen && /^(AND|OR)\b/i.test(l.trim())) s = 'cond';
+      else if (!hoisted && !join) s = 'item';
+      else break;
+      const by = (join && hoisted && indentJoins ? 2 : 0) + (s !== 'join' && join && onSeen ? 2 : 0);
+      for (const k of [...pending, j]) shift[k] += by; // a nested FROM adds to its outer one's shift
+      pending = [];
+      if (join && onAt[j].includes(base)) onSeen = true;
+    }
+  }
+  return lines.map((l, k) => (shift[k] && !frozen.has(k) ? ' '.repeat(shift[k]) + l : l)).join('\n');
 }
 
 // SQL Server layout fixes on sql-formatter's output:

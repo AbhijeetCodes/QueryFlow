@@ -18,6 +18,10 @@ hosted for free as a static site. See README.md for features, layout and hosting
 - **Light and fast.** It's for reading and editing 1,000+ line queries. Avoid new dependencies
   and keep anything not needed for first paint lazy-loaded (the formatter and diff dialog are
   loaded with `import()` in `src/main.js`).
+- **Formatting requests:** sqlfluff's default layout is the standard. Output that breaks it is a
+  bug, so fix it. A new ⋯ menu option only for a style sqlfluff (or Poor SQL) already offers as a
+  setting, such as `indented_joins` → *Joins*, and that changes many lines. Default stays
+  sqlfluff's. Decline other one-off styles by pointing to sqlfluff's defaults.
 - **Git:** `origin` is the public GitHub repo `AbhijeetCodes/QueryFlow`. Every push to `main`
   runs the tests and redeploys https://abhijeetcodes.github.io/QueryFlow/ (GitHub Pages, via
   `.github/workflows/pages.yml`), so a push publishes. Ask before pushing.

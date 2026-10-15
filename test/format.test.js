@@ -60,3 +60,24 @@ test('format options: leading commas, keyword case, indent, expanded lists', () 
   const typed = formatSql('select x n from t', 'bigquery', { keywordCase: 'preserve' });
   assert.equal(typed, 'select x as n\nfrom t\n');
 });
+
+test('format: extra ON conditions one step in, joins optionally indented under FROM', () => {
+  const src = `select a.id from a join b on b.id = a.id and b.k = 1 and (b.x = 1 or b.y = 2)
+-- next
+left join (select c.id from c join d on d.id = c.id and d.f = 1) q on q.id = a.id and q.n > 3 where a.z = 1`;
+  const flush = formatSql(src, 'sqlserver');
+  assert.match(flush, /^INNER JOIN b ON b\.id = a\.id\n {2}AND b\.k = 1\n {2}AND \(\n {4}b\.x = 1\n {4}OR b\.y = 2\n {2}\)$/m);
+  assert.match(flush, /^-- next\nLEFT JOIN \($/m);
+  assert.match(flush, /^ {2}FROM c\n {2}INNER JOIN d ON d\.id = c\.id\n {4}AND d\.f = 1\n\) AS q ON q\.id = a\.id\n {2}AND q\.n > 3\nWHERE a\.z = 1$/m);
+  assert.equal(formatSql(flush, 'sqlserver'), flush);
+
+  const ind = formatSql(src, 'sqlserver', { joins: 'indented', indent: '4' });
+  assert.match(ind, /^FROM a\n {4}INNER JOIN b ON b\.id = a\.id\n {8}AND b\.k = 1$/m);
+  assert.match(ind, /^ {4}-- next\n {4}LEFT JOIN \($/m);
+  assert.match(ind, /^ {8}FROM c\n {12}INNER JOIN d ON d\.id = c\.id\n {16}AND d\.f = 1\n {4}\) AS q ON q\.id = a\.id\n {8}AND q\.n > 3\nWHERE a\.z = 1$/m);
+  assert.equal(formatSql(ind, 'sqlserver', { joins: 'indented', indent: '4' }), ind);
+
+  // a comma join keeps its items under a bare FROM; the join's conditions still go in
+  const comma = formatSql('select * from x, y join z on z.id = y.id and z.q = 1', 'bigquery', { joins: 'indented' });
+  assert.match(comma, /^FROM\n {2}x,\n {2}y\n {2}INNER JOIN z ON z\.id = y\.id\n {4}AND z\.q = 1$/m);
+});

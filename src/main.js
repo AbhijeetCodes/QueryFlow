@@ -125,14 +125,14 @@ const runKey = isMac ? '⌘Enter' : 'Ctrl+Enter';
 const emptyEl = document.createElement('div');
 emptyEl.className = 'editor-empty';
 emptyEl.innerHTML = `<div class="ee-card">
-  <b>Paste a query, or query a CSV</b>
-  <p>Paste SQL here${pasteKey} and it is tidied up for you. ${touch ? 'Open' : 'Drop'} a CSV or Excel file ${touch ? '' : 'anywhere '}to run SQL on it, right in your browser.</p>
+  <b>Paste a query${touch ? '' : ', or drop a CSV'}</b>
+  <p>Paste SQL${pasteKey} to tidy it up, or run SQL on a CSV or Excel file.</p>
   <div class="ee-acts">
-    <button class="btn primary sm" data-act="csv">Query a CSV or Excel file…</button>
-    <button class="btn sm" data-act="sample">Load the example</button>
-    <button class="btn sm" data-act="open">Open .sql file…</button>
+    <button class="btn primary" data-act="csv">Query a CSV or Excel file…</button>
+    <button class="btn" data-act="sample" title="A short query on a made-up Pokédex, with 3 test tables to run it on">Load the example</button>
+    <button class="btn" data-act="open">Open .sql file…</button>
   </div>
-  <small>Files stay in your browser: nothing is uploaded. The example is a short query on a made-up Pokédex, with 3 test tables to run it on.</small>
+  <small>Nothing is uploaded: files stay in your browser.</small>
 </div>`;
 document.getElementById('editor').append(emptyEl);
 emptyEl.addEventListener('click', (e) => {
